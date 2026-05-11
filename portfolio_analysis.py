@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""
+Portfolio Analysis & Backtesting Tool  (Production-Ready Edition)
+==================================================================
+Walk-Forward HRP with three real-world market frictions:
+  1. Commissions & Slippage  – 15 bps per-trade cost via bt.Backtest
+  2. T+1 Execution Delay     – weights computed on Day T, traded on Day T+1
+  3. Weight Floor            – MIN_WEIGHT = 5% prevents any asset being zeroed
+
+Pipeline (zero lookahead bias preserved throughout):
+  Step 1: Data Ingestion       – yfinance (adjusted-close prices)
+  Step 2: Walk-Forward HRP     – Riskfolio-Lib (re-optimised on each trigger
+                                  using STRICTLY past data only)
+  Step 3: Backtest             – bt (T+1 delay + commissions)
+  Step 4: Reporting            – QuantStats (HTML tear sheet)
+
+Outputs (saved to OUTPUT_DIR):
+  hrp_weights_history.csv  – time-series of walk-forward allocations
+  hrp_tearsheet.html       – full QuantStats performance tear sheet
+"""
+
+from __future__ import annotations
+
+import sys
+import warnings
+from pathlib import Path
+
+import numpy  as np
+import pandas as pd
+import yfinance as yf
+import riskfolio as rp
+import bt
+import quantstats as qs
+
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                        USER CONFIGURATION                               ║
+# ║          ← All user-facing settings live here; edit freely →            ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# ── Investment Universe ────────────────────────────────────────────────────
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  15-Year Long-Term Savings Plan — 4 Core Asset Classes                 │
+# │                                                                         │
+# │  SPY  │ S&P 500          │ SPDR S&P 500 ETF           │ since 1993     │
+# │  EEM  │ Emerging Markets │ iShares MSCI EM ETF         │ since Apr 2003 │
+# │  URA  │ Uranium          │ Global X Uranium ETF        │ since Nov 2010 │
+# │  GLD  │ Gold             │ SPDR Gold Shares (physical) │ since Nov 2004 │
+# │                                                                         │
+# │  Binding date constraint: URA inception = 4 Nov 2010                   │
+# └─────────────────────────────────────────────────────────────────────────┘
+TICKERS: list[str] = [
+    "SPY",   # SPDR S&P 500 ETF Trust          – US large-cap equities
+    "EEM",   # iShares MSCI Emerging Markets   – EM equities
+    "URA",   # Global X Uranium ETF            – uranium miners & royalties
+    "GLD",   # SPDR Gold Shares                – physical gold
+]
+
+# ── Backtest Date Range ────────────────────────────────────────────────────
+START_DATE = "2010-11-01"   # captures URA from inception; warmup runs 2010–2013
+END_DATE   = "2025-12-31"   # ~15 years total data; ~12 years live-trading
+
+# ── Lookback Window (Walk-Forward) ────────────────────────────────────────
+# Years of past daily returns fed into Riskfolio-Lib on each rebalance date.
+# The strategy stays in CASH during this warmup period.
+# 3 years ≈ 756 observations — stable 4×4 correlation matrix.
+LOOKBACK_YEARS: int = 3
+
+# ── Rebalancing Frequency ─────────────────────────────────────────────────
+# How often a new HRP calculation is triggered.
+# Options: "monthly" | "quarterly" | "yearly"
+REBALANCE_FREQ = "quarterly"
+
+# ── Weight Floor (Friction #3) ────────────────────────────────────────────
+# Minimum allocation per asset after HRP optimisation.
+# Prevents volatile assets (e.g. URA) from being reduced to near 0%.
+# Set to 0.0 to disable the floor and allow pure HRP weights.
+MIN_WEIGHT: float = 0.05   # 5 % minimum weight per asset
+
+# ── Commission + Slippage Model (Friction #1) ─────────────────────────────
+# Combined estimate: broker commission + bid/ask half-spread.
+# 15 bps (0.15%) is a conservative but realistic figure for ETF trades.
+# Applied on EVERY rebalance trade by bt via the commissions callback.
+COMMISSION_BPS: float = 15.0   # basis points; converted to decimal below
+_COMMISSION_RATE: float = COMMISSION_BPS / 10_000.0   # → 0.0015
+
+# ── Benchmark for Tear Sheet ──────────────────────────────────────────────
+# Set to None (no quotes) to omit the benchmark from the report.
+BENCHMARK_TICKER = "SPY"
+
+# ── Output Directory ──────────────────────────────────────────────────────
+OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║          HRPWithT1Delay  —  Production bt.Algo                          ║
+# ║                                                                          ║
+# ║  Design rationale for the combined algo                                  ║
+# ║  ─────────────────────────────────────                                   ║
+# ║  bt's chain aborts as soon as any algo returns False.  If we used a      ║
+# ║  standard Run* → CalculateHRP → Rebalance chain, making                  ║
+# ║  CalculateHRP return False (to block same-day execution) would also       ║
+# ║  block the T+1 ExecutePending algo if it came after in the chain.         ║
+# ║                                                                          ║
+# ║  The solution: one combined algo that runs on EVERY bar and manages       ║
+# ║  its own state machine:                                                   ║
+# ║    • Phase A (scheduling): fires on the first bar of each new             ║
+# ║      month / quarter / year (configurable).                               ║
+# ║    • On the trigger bar (Day T): compute HRP → store weights as           ║
+# ║      pending → return False  (no trade today).                            ║
+# ║    • On the very next bar (Day T+1): pop pending weights → set            ║
+# ║      target.temp['weights'] → return True  (Rebalance() executes).        ║
+# ║                                                                          ║
+# ║  Zero-lookahead-bias guarantee:                                           ║
+# ║    prices are sliced with index < target.now so the current day's         ║
+# ║    close is never included in the optimisation window.                    ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+class HRPWithT1Delay(bt.Algo):
+    """
+    Walk-forward HRP optimiser with built-in T+1 execution delay and
+    a configurable minimum weight floor.
+
+    State machine (per bar):
+      ① If pending weights exist  →  inject them into target.temp and
+        return True so bt.algos.Rebalance() fires.  (Day T+1 execution)
+      ② Else if this bar is a scheduled rebalance trigger  →  compute HRP
+        on strictly-past data, store as pending, return False.  (Day T calc)
+      ③ Else  →  return False.  (ordinary bar; no action)
+    """
+
+    def __init__(
+        self,
+        all_prices: pd.DataFrame,
+        lookback_years: int,
+        min_weight: float,
+        rebalance_freq: str,
+    ) -> None:
+        super().__init__()
+        self._prices        = all_prices
+        self._lookback_days = int(lookback_years * 252)
+        self._min_weight    = min_weight
+        self._freq          = rebalance_freq.lower()
+
+        # Scheduling state
+        self._last_trigger_date: pd.Timestamp | None = None
+
+        # T+1 pending queue — holds at most one set of weights at a time
+        self._pending_weights: dict[str, float] | None = None
+
+        if self._freq not in ("monthly", "quarterly", "yearly"):
+            raise ValueError(
+                f"Invalid REBALANCE_FREQ '{rebalance_freq}'. "
+                "Choose from: monthly, quarterly, yearly."
+            )
+
+    # ── Scheduling helper ─────────────────────────────────────────────────
+    def _is_trigger_day(self, date: pd.Timestamp) -> bool:
+        """True on the first trading bar of a new month / quarter / year."""
+        if self._last_trigger_date is None:
+            return True
+        prev = self._last_trigger_date
+        if self._freq == "monthly":
+            return (date.year, date.month) > (prev.year, prev.month)
+        if self._freq == "quarterly":
+            return (date.year, date.quarter) > (prev.year, prev.quarter)
+        # yearly
+        return date.year > prev.year
+
+    # ── Riskfolio-Lib HRP call ────────────────────────────────────────────
+    def _compute_hrp(
+        self, window_returns: pd.DataFrame
+    ) -> dict[str, float] | None:
+        """
+        Calls Riskfolio-Lib's official HRP engine.
+        Applies the MIN_WEIGHT floor (w_min) directly in the optimisation.
+        Falls back to a manual clip-and-renormalise if w_min is rejected.
+        Returns a {ticker: weight} dict or None on failure.
+        """
+        try:
+            port = rp.HCPortfolio(returns=window_returns)
+            w_df: pd.DataFrame = port.optimization(
+                model="HRP",
+                codependence="pearson",
+                rm="MV",          # Minimum-Variance risk measure
+                rf=0.0,
+                linkage="ward",   # Ward linkage for hierarchical clustering
+                max_k=10,
+                leaf_order=True,
+                w_min=self._min_weight,   # ← Weight Floor (Friction #3)
+            )
+        except TypeError:
+            # Older Riskfolio-Lib build that doesn't accept w_min keyword
+            port = rp.HCPortfolio(returns=window_returns)
+            w_df = port.optimization(
+                model="HRP",
+                codependence="pearson",
+                rm="MV",
+                rf=0.0,
+                linkage="ward",
+                max_k=10,
+                leaf_order=True,
+            )
+        except Exception as exc:
+            return None  # caller will log and skip
+
+        weights: pd.Series = w_df["weights"]
+
+        # ── Safety net: manual floor + renormalise ─────────────────────────
+        # Guarantees MIN_WEIGHT is respected even if w_min was silently
+        # ignored or the internal solver rounded slightly below the bound.
+        if self._min_weight > 0.0:
+            weights = weights.clip(lower=self._min_weight)
+            weights = weights / weights.sum()
+
+        return weights.to_dict()
+
+    # ── bt algo entry point ───────────────────────────────────────────────
+    def __call__(self, target) -> bool:
+
+        # ══ Phase A: T+1 Execution ═════════════════════════════════════════
+        # If the previous bar computed new HRP weights, execute them NOW
+        # (i.e. on the next trading bar = T+1).
+        if self._pending_weights is not None:
+            target.temp["weights"] = self._pending_weights
+            self._pending_weights  = None
+            return True   # → bt.algos.Rebalance() will trade to these weights
+
+        # ══ Phase B: Scheduling check ══════════════════════════════════════
+        if not self._is_trigger_day(target.now):
+            return False   # ordinary bar; nothing to do
+
+        # Mark this date as the last trigger (even during warmup) so the
+        # scheduler advances correctly and doesn't fire on every daily bar.
+        self._last_trigger_date = target.now
+
+        # ══ Phase C: Warmup guard ══════════════════════════════════════════
+        # Slice prices to rows STRICTLY BEFORE today (zero-lookahead bias).
+        past_prices: pd.DataFrame = self._prices.loc[
+            self._prices.index < target.now
+        ]
+        if len(past_prices) < self._lookback_days:
+            return False   # not enough history yet; stay in cash
+
+        # ══ Phase D: Rolling-window returns ════════════════════════════════
+        window_prices: pd.DataFrame  = past_prices.iloc[-self._lookback_days:]
+        window_returns: pd.DataFrame = window_prices.pct_change().dropna()
+        if len(window_returns) < 2:
+            return False
+
+        # ══ Phase E: HRP optimisation (Day T) ══════════════════════════════
+        weights = self._compute_hrp(window_returns)
+        if weights is None:
+            print(f"[WARN] HRP failed on {target.now.date()}; skipping rebalance.")
+            return False
+
+        # Store as pending — will be executed on Day T+1 (next bar)
+        self._pending_weights = weights
+        return False   # do NOT rebalance today
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                          PIPELINE                                        ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+def main() -> None:
+
+    # ── Step 0: Prepare output directory ──────────────────────────────────
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Output directory : {OUTPUT_DIR}")
+    print(
+        f"[INFO] Market frictions : "
+        f"{COMMISSION_BPS:.0f} bps commission/slippage | "
+        f"T+1 execution delay | "
+        f"{MIN_WEIGHT:.0%} weight floor"
+    )
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 1 – DATA INGESTION  (yfinance)
+    # ══════════════════════════════════════════════════════════════════════
+    print(f"\n[STEP 1] Downloading adjusted-close prices ...")
+    print(f"         Tickers : {TICKERS}")
+    print(f"         Period  : {START_DATE}  →  {END_DATE}")
+
+    raw: pd.DataFrame = yf.download(
+        TICKERS,
+        start=START_DATE,
+        end=END_DATE,
+        auto_adjust=True,
+        progress=False,
+    )
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        prices: pd.DataFrame = raw["Close"].copy()
+    else:
+        prices = raw[["Close"]].copy()
+        prices.columns = TICKERS
+
+    prices = prices.dropna(axis=1, how="all")
+    prices = prices.ffill().dropna()
+
+    available: list[str] = prices.columns.tolist()
+    print(f"[INFO] Tickers with valid data : {available}")
+
+    if len(available) < 2:
+        sys.exit(
+            "[ERROR] Fewer than 2 tickers with valid price data. "
+            "Expand the date range or change the TICKERS list."
+        )
+
+    if len(prices) < LOOKBACK_YEARS * 252 + 60:
+        print(
+            f"[WARN] Limited price history ({len(prices)} days). "
+            "Consider extending START_DATE."
+        )
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 2 + 3 – WALK-FORWARD HRP BACKTEST  (Riskfolio-Lib inside bt)
+    # ══════════════════════════════════════════════════════════════════════
+    print(
+        f"\n[STEP 2+3] Running production backtest "
+        f"(lookback: {LOOKBACK_YEARS} yr | rebalance: {REBALANCE_FREQ} | "
+        f"T+1 delay | {COMMISSION_BPS} bps cost) ..."
+    )
+
+    # ── Strategy chain ─────────────────────────────────────────────────────
+    # SelectAll:       make every ticker available to Rebalance
+    # HRPWithT1Delay:  owns scheduling + HRP calc (Day T) + T+1 execution
+    # Rebalance:       executes trades when HRPWithT1Delay returns True
+    hrp_algo = HRPWithT1Delay(
+        all_prices    = prices,
+        lookback_years= LOOKBACK_YEARS,
+        min_weight    = MIN_WEIGHT,
+        rebalance_freq= REBALANCE_FREQ,
+    )
+
+    strategy = bt.Strategy(
+        "HRP_Production",
+        [
+            bt.algos.SelectAll(),
+            hrp_algo,
+            bt.algos.Rebalance(),
+        ],
+    )
+
+    # ── Friction #1: Commission + Slippage ────────────────────────────────
+    # bt calls this lambda for every buy/sell order.
+    # q = number of shares; p = price per share
+    # abs(q) * p = gross notional value of the trade
+    # × _COMMISSION_RATE = total friction cost deducted from the portfolio
+    backtest = bt.Backtest(
+        strategy,
+        prices,
+        commissions=lambda q, p: abs(q) * p * _COMMISSION_RATE,
+    )
+    result = bt.run(backtest)
+
+    # ── Extract equity curve → daily returns ──────────────────────────────
+    equity_curve: pd.Series     = result.prices["HRP_Production"]
+    strategy_returns: pd.Series = equity_curve.pct_change().dropna()
+    strategy_returns.name = "HRP_Production"
+
+    # Strip the flat cash warmup prefix so QuantStats metrics reflect
+    # only the live-trading phase (after the first real rebalance on T+1).
+    nonzero = strategy_returns[strategy_returns != 0]
+    if nonzero.empty:
+        sys.exit("[ERROR] Strategy produced no non-zero returns. Check data/config.")
+    first_live = nonzero.index[0]
+    strategy_returns_live = strategy_returns.loc[first_live:]
+
+    total_return = (equity_curve.iloc[-1] / equity_curve.iloc[0]) - 1
+    print(
+        f"[INFO] Backtest period (incl. warmup) : "
+        f"{equity_curve.index[0].date()}  →  {equity_curve.index[-1].date()}"
+    )
+    print(
+        f"[INFO] Live-trading start (post T+1)  : "
+        f"{strategy_returns_live.index[0].date()}"
+    )
+    print(f"[INFO] Total return (full period)     : {total_return:.2%}")
+
+    # ── Save historical walk-forward weights ──────────────────────────────
+    weights_history: pd.DataFrame = result.get_security_weights("HRP_Production")
+    weights_path = OUTPUT_DIR / "hrp_weights_history.csv"
+    weights_history.to_csv(weights_path)
+    print(f"\n[INFO] Historical weights saved → {weights_path}")
+
+    returns_path = OUTPUT_DIR / "hrp_returns.csv"
+    strategy_returns_live.to_csv(returns_path, header=True)
+    print(f"[INFO] Daily returns saved      → {returns_path}")
+
+    live_weights = weights_history.loc[weights_history.sum(axis=1) > 0]
+    if not live_weights.empty:
+        print("\n[INFO] Most recent HRP allocation (post-floor):")
+        for ticker, wgt in live_weights.iloc[-1].sort_values(ascending=False).items():
+            print(f"         {ticker:<6}  {wgt:.4%}")
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 4 – PERFORMANCE REPORT  (QuantStats)
+    # ══════════════════════════════════════════════════════════════════════
+    print("\n[STEP 4] Generating QuantStats HTML tear sheet ...")
+
+    benchmark_returns: pd.Series | None = None
+    if BENCHMARK_TICKER:
+        print(f"[INFO] Downloading benchmark : {BENCHMARK_TICKER}")
+        bm_raw = yf.download(
+            BENCHMARK_TICKER,
+            start=START_DATE,
+            end=END_DATE,
+            auto_adjust=True,
+            progress=False,
+        )
+        bm_prices = (
+            bm_raw["Close"].squeeze()
+            if isinstance(bm_raw.columns, pd.MultiIndex)
+            else bm_raw["Close"].squeeze()
+        )
+        benchmark_returns = bm_prices.pct_change().dropna()
+        benchmark_returns.name = BENCHMARK_TICKER
+
+    tearsheet_path = OUTPUT_DIR / "hrp_tearsheet.html"
+
+    qs.reports.html(
+        strategy_returns_live,
+        benchmark=benchmark_returns,
+        rf=0.0,
+        output=str(tearsheet_path),
+        title=(
+            "HRP Walk-Forward │ SPY+EEM+URA+GLD │ "
+            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor"
+        ),
+        match_dates=True,
+    )
+    print(f"[INFO] Tear sheet saved → {tearsheet_path}")
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    # DONE
+    # ══════════════════════════════════════════════════════════════════════
+    print("\n" + "=" * 65)
+    print("  Production backtest complete. Output files:")
+    print(f"    {weights_path}")
+    print(f"    {returns_path}")
+    print(f"    {tearsheet_path}")
+    print("=" * 65)
+
+
+if __name__ == "__main__":
+    main()
