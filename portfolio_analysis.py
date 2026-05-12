@@ -3,12 +3,13 @@
 Portfolio Analysis & Backtesting Tool  (Production-Ready Edition)
 ==================================================================
 European UCITS Walk-Forward HRP  —  5+ Year Investment Horizon
-# Universe (6 ETFs) — Medium-Low Risk | 50% ESG Mandate:
-#   ESG            — SUSW (MSCI World SRI), ERNX (EUR Corp Bond ESG), RMAU (Physical Gold ETC)
-#   Traditional    — SWDA (Core MSCI World), X7G7 (EZ Gov Bond 7-10)
+# Universe (6 ETFs) — Balanced Medium Risk | Quality-Factor Tilt:
+#   Quality-Factor — iShares MSCI World Quality (IS3Q)
+#   ESG            — SUSW (MSCI World SRI), RMAU (Physical Gold ETC)
+#   Traditional    — SWDA (Core MSCI World), ERNX (EUR Corp Bond)
 #   Defensive Sat. — IQQH (Global Healthcare)
 # Proxy tickers for deep-history backtest (2018–):
-#   EUNL.DE, IUS3.DE, IEAC.DE, IQQH.DE, DBXN.DE, IGLN.L
+#   EUNL.DE, IS3Q.DE, IUS3.DE, IQQH.DE, EUN5.DE, IGLN.L
 
 Walk-Forward HRP with three real-world market frictions:
   1. Commissions & Slippage  – 15 bps per-trade cost via bt.Backtest
@@ -50,33 +51,40 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# "Deep History" UCITS Proxy Portfolio — Medium-Low Risk | 50% ESG Mandate
+# "Deep History" UCITS Proxy Portfolio — Balanced Medium Risk | Quality-Factor Tilt
 #
 # TARGET portfolio (what the client will actually hold):
-#   SUSW  iShares MSCI World SRI UCITS ETF              – ESG core equity
-#   ERNX  iShares EUR Corp Bond ESG UCITS ETF           – ESG investment-grade credit
-#   RMAU  Royal Mint Physical Gold ETC                  – ESG physical gold
 #   SWDA  iShares Core MSCI World UCITS ETF             – traditional core equity
-#   X7G7  Xtrackers II EZ Gov Bond 7-10 UCITS ETF      – sovereign duration anchor
+#   IS3Q  iShares Edge MSCI World Quality Factor ETF   – quality-factor equity (Sharpe lever)
+#   SUSW  iShares MSCI World SRI UCITS ETF              – ESG equity anchor
 #   IQQH  iShares Global Healthcare UCITS ETF           – defensive equity satellite
+#   ERNX  iShares EUR Corp Bond ESG UCITS ETF           – modest IG credit yield buffer
+#   RMAU  Royal Mint Physical Gold ETC                  – tail-risk hedge / inflation store
 #
 # PROXY tickers used here (older series; same underlying risk factors):
 #   EUNL.DE  iShares Core MSCI World UCITS ETF          Xetra (EUR)  2005  ← proxy SWDA
+#   IS3Q.DE  iShares Edge MSCI World Quality Factor     Xetra (EUR)  2018  ← direct listing
 #   IUS3.DE  iShares MSCI World SRI UCITS ETF           Xetra (EUR)  2018  ← proxy SUSW
-#   EUN5.DE  iShares Core EUR Corporate Bond UCITS ETF   Xetra (EUR)  2010  ← proxy ERNX
 #   IQQH.DE  iShares Global Healthcare UCITS ETF        Xetra (EUR)  2001  ← proxy IQQH (direct)
-#   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF   Xetra (EUR)  2007  ← proxy X7G7
+#   EUN5.DE  iShares Core EUR Corporate Bond UCITS ETF  Xetra (EUR)  2010  ← proxy ERNX
 #   IGLN.L   iShares Physical Gold ETC                 LSE (USD)    2011  ← proxy RMAU
 #
-# Binding data constraint: IUS3.DE (Xetra ESG SRI, inception ~mid-2018).
+# WHY remove DBXN.DE (EZ Gov Bond 7-10Y):
+#   Long-duration gov bonds hurt in 2022 rate-shock (-20% price) AND provide
+#   insufficient offset in fast equity crashes (2020 COVID). Net effect: drag
+#   on CAGR without meaningful drawdown protection. Replaced by IS3Q quality
+#   factor which is "defensive equity" — lower vol than market-cap, better
+#   Sharpe, without duration risk.
+#
+# Binding data constraint: IUS3.DE / IS3Q.DE (both Xetra, inception 2018-01-02).
 # START_DATE = 2018-01-01; warmup year ≈ 2018; live trading from mid-2019.
 TICKERS: list[str] = [
     "EUNL.DE",  # iShares Core MSCI World UCITS ETF             – core global equity (proxy: SWDA)
+    "IS3Q.DE",  # iShares Edge MSCI World Quality Factor ETF   – quality-factor equity (Sharpe lever)
     "IUS3.DE",  # iShares MSCI World SRI UCITS ETF              – ESG equity (proxy: SUSW)
-    "EUN5.DE",  # iShares Core EUR Corporate Bond UCITS ETF       – IG credit (proxy: ERNX ESG bonds)
     "IQQH.DE",  # iShares Global Healthcare UCITS ETF           – defensive satellite (proxy: IQQH)
-    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF      – duration / rate hedge (proxy: X7G7)
-    "IGLN.L",   # iShares Physical Gold ETC (LSE)               – gold hedge (proxy: RMAU)
+    "EUN5.DE",  # iShares Core EUR Corporate Bond UCITS ETF     – modest IG credit yield buffer
+    "IGLN.L",   # iShares Physical Gold ETC (LSE)               – tail-risk hedge (proxy: RMAU)
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
@@ -93,28 +101,30 @@ LOOKBACK_YEARS: float = 1.0
 
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
 # How often a new HRP calculation is triggered.
-# Options: "monthly" | "quarterly" | "yearly"
-REBALANCE_FREQ = "monthly"   # monthly reactions to volatility regimes across all 6 assets
+# Options: "monthly" | "quarterly" | "semi-annual" | "yearly"
+REBALANCE_FREQ = "semi-annual"   # semi-annual; matches client's real-world rebalancing cadence
 
 # ── Weight Floor (Friction #3) ────────────────────────────────────────────
 # Minimum allocation per asset after HRP optimisation.
-# Lowered from 5% → 3% for the medium-low risk profile: gives HRP more
-# latitude to rotate from equity satellites into fixed income during
-# high-volatility regimes without forcing full permanent equity exposure.
+# Raised back to 5% for the balanced profile: 6 tickers × 5% floor = 30% committed,
+# leaving 70% for HRP's free allocation. Ensures every position is meaningful
+# and semi-annual rebalancing doesn't let any asset drift to near zero.
 # Set to 0.0 to disable the floor and allow pure HRP weights.
-MIN_WEIGHT: float = 0.03   # 3% minimum — wider HRP latitude for defensive reallocation
+MIN_WEIGHT: float = 0.05   # 5% minimum — meaningful positions across all 6 assets
 
 # ── Per-Asset Maximum Weight Caps ──────────────────────────────────────────
-# Medium-Low Risk profile: fixed income (DBXN + IEAC) can reach up to 60%
-# combined at peak defensiveness, which is appropriate for this mandate.
-# Equity satellite (IQQH) is capped at 20% to limit sector concentration.
-# Assets not listed here have an implicit 1.0 (100%) upper bound.
+# Balanced profile: ~70-75% equity, ~18% bonds max, ~12% gold max.
+# EUNL.DE capped to prevent plain market-cap dominating when quality (IS3Q) is also present.
+# IS3Q.DE intentionally uncapped: HRP allocates it where variance budget allows — optimal.
+# EUN5.DE limited to 18%: enough yield buffer without dragging CAGR toward bond-like returns.
+# Assets not listed here (IS3Q.DE) have an implicit 1.0 (100%) upper bound.
 # All constraints enforced by the manual 4-step post-optimisation clipper.
 MAX_WEIGHTS: dict[str, float] = {
-    "DBXN.DE": 0.35,   # Eurozone Gov Bonds: raised 20%→35% — allow defensive loading in crises
-    "EUN5.DE": 0.25,   # EUR Corp Bond (proxy ERNX ESG): cap at 25% — credit concentration limit
-    "IGLN.L":  0.15,   # Physical Gold ETC (proxy RMAU):  cap at 15% — gold hedge ceiling
-    "IQQH.DE": 0.20,   # Global Healthcare satellite:     cap at 20% — sector concentration limit
+    "EUNL.DE": 0.35,   # Core MSCI World:   cap 35% — prevents plain market-cap dominance
+    "IUS3.DE": 0.25,   # ESG SRI equity:    cap 25% — ESG anchor, avoids double-count with EUNL
+    "EUN5.DE": 0.18,   # EUR Corp Bond:     cap 18% — modest yield buffer; not a core holding
+    "IQQH.DE": 0.20,   # Global Healthcare: cap 20% — sector concentration limit
+    "IGLN.L":  0.12,   # Physical Gold:     cap 12% — tail-risk hedge ceiling
 }
 
 # ── Commission + Slippage Model (Friction #1) ─────────────────────────────
@@ -190,15 +200,15 @@ class HRPWithT1Delay(bt.Algo):
         # T+1 pending queue — holds at most one set of weights at a time
         self._pending_weights: dict[str, float] | None = None
 
-        if self._freq not in ("monthly", "quarterly", "yearly"):
+        if self._freq not in ("monthly", "quarterly", "semi-annual", "yearly"):
             raise ValueError(
                 f"Invalid REBALANCE_FREQ '{rebalance_freq}'. "
-                "Choose from: monthly, quarterly, yearly."
+                "Choose from: monthly, quarterly, semi-annual, yearly."
             )
 
     # ── Scheduling helper ─────────────────────────────────────────────────
     def _is_trigger_day(self, date: pd.Timestamp) -> bool:
-        """True on the first trading bar of a new month / quarter / year."""
+        """True on the first trading bar of a new month / quarter / half-year / year."""
         if self._last_trigger_date is None:
             return True
         prev = self._last_trigger_date
@@ -206,6 +216,9 @@ class HRPWithT1Delay(bt.Algo):
             return (date.year, date.month) > (prev.year, prev.month)
         if self._freq == "quarterly":
             return (date.year, date.quarter) > (prev.year, prev.quarter)
+        if self._freq == "semi-annual":
+            half = lambda d: (d.year, 1 if d.month <= 6 else 2)
+            return half(date) > half(prev)
         # yearly
         return date.year > prev.year
 
@@ -533,9 +546,9 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ UCITS Medium-Low Risk 6-ETF │ EUNL+IUS3+EUN5+IQQH+DBXN+IGLN │ "
+            "HRP Walk-Forward │ UCITS Balanced 6-ETF │ EUNL+IS3Q+IUS3+IQQH+EUN5+IGLN │ "
             f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ "
-            "DBXN≤35% EUN5≤25% IQQH≤20% IGLN≤15%"
+            "EUNL≤35% IUS3≤25% EUN5≤18% IQQH≤20% IGLN≤12% │ Semi-Annual Rebal"
         ),
         match_dates=True,
     )
