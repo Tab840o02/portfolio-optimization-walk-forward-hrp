@@ -54,17 +54,19 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # Verified liquid European tickers (mix of Xetra .DE and LSE .L):
 #   EUNL.DE  iShares Core MSCI World UCITS ETF            Xetra (EUR)   2005
 #   IUS3.DE  iShares MSCI World SRI UCITS ETF             Xetra (EUR)   2019
-#   WEBG.L   Amundi MSCI World Small Cap ESG Leaders      LSE (GBP)    ~2019
+#   WEBG.DE  Amundi MSCI World Small Cap ESG Leaders      Xetra (EUR)   2019
 #   VVSM.DE  VanEck Semiconductor UCITS ETF               Xetra (EUR)   2020
 #   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF     Xetra (EUR)   2007
 #   RMAU.L   HanETF Royal Mint Physical Gold ETC          LSE (USD)    ~2019
 #
 # Binding data constraint: VVSM.DE (inception 2020) and IUS3.DE (2019).
 # START_DATE = 2021-01-01 guarantees all 6 tickers have reliable volume.
+# WEBG.DE replaces WEBG.L: same fund, Xetra listing shares German holidays
+# with EUNL/IUS3/VVSM/DBXN, eliminating UK-holiday NaN mismatches.
 TICKERS: list[str] = [
     "EUNL.DE",  # iShares Core MSCI World UCITS ETF        – core global equity anchor
     "IUS3.DE",  # iShares MSCI World SRI UCITS ETF         – ESG large-cap world
-    "WEBG.L",   # Amundi MSCI World Small Cap ESG Leaders  – ESG small-cap growth
+    "WEBG.DE",  # Amundi MSCI World Small Cap ESG Leaders  – ESG small-cap growth (Xetra)
     "VVSM.DE",  # VanEck Semiconductor UCITS ETF           – thematic AI/chip satellite
     "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF – duration / rate hedge
     "RMAU.L",   # HanETF Royal Mint Physical Gold ETC      – ESG-screened gold
@@ -92,6 +94,16 @@ REBALANCE_FREQ = "monthly"   # monthly reactions to volatility spikes in SMH/WEB
 # Prevents volatile assets (e.g. SMH, WEBG.L) from being reduced to near 0%.
 # Set to 0.0 to disable the floor and allow pure HRP weights.
 MIN_WEIGHT: float = 0.05   # 5 % minimum weight per asset
+
+# ── Per-Asset Maximum Weight Caps ──────────────────────────────────────────
+# Caps defensive assets so they cannot crowd out the growth engines.
+# Assets not listed here have an implicit 1.0 (100%) upper bound.
+# These bounds are passed to Riskfolio-Lib (w_max) and enforced as a
+# manual safety net after the solver returns, so the loop never crashes.
+MAX_WEIGHTS: dict[str, float] = {
+    "DBXN.DE": 0.20,   # Eurozone Gov Bonds: cap at 20% (prevents bond-trap)
+    "RMAU.L":  0.15,   # Physical Gold ETC:  cap at 15%
+}
 
 # ── Commission + Slippage Model (Friction #1) ─────────────────────────────
 # Combined estimate: broker commission + bid/ask half-spread.
@@ -148,14 +160,16 @@ class HRPWithT1Delay(bt.Algo):
     def __init__(
         self,
         all_prices: pd.DataFrame,
-        lookback_years: int,
+        lookback_years: float,
         min_weight: float,
         rebalance_freq: str,
+        max_weights: dict[str, float] | None = None,
     ) -> None:
         super().__init__()
         self._prices        = all_prices
         self._lookback_days = int(lookback_years * 252)
         self._min_weight    = min_weight
+        self._max_weights   = max_weights or {}   # {ticker: cap}; empty = no caps
         self._freq          = rebalance_freq.lower()
 
         # Scheduling state
@@ -375,6 +389,7 @@ def main() -> None:
         lookback_years= LOOKBACK_YEARS,
         min_weight    = MIN_WEIGHT,
         rebalance_freq= REBALANCE_FREQ,
+        max_weights   = MAX_WEIGHTS,
     )
 
     strategy = bt.Strategy(
@@ -471,7 +486,7 @@ def main() -> None:
         output=str(tearsheet_path),
         title=(
             "HRP Walk-Forward │ UCITS 6-ETF Growth │ EUNL+IUS3+WEBG+VVSM+DBXN+RMAU │ "
-            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor"
+            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ DBXN≤20% RMAU≤15%"
         ),
         match_dates=True,
     )
