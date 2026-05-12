@@ -48,32 +48,30 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# Risk-On European UCITS Portfolio — 5-Year Growth Horizon (5 ETFs)
-# XEON (cash proxy) removed: HRP forced to allocate among risk assets only.
+# Risk-On European UCITS Portfolio — 5+ Year Growth Horizon (6 ETFs)
+# No cash/XEON: HRP allocates only among risk and growth assets.
 #
-# All four equity/bond ETFs use the .MI suffix (Borsa Italiana / Euronext Milan)
-# so they share Italian exchange holidays, trade in EUR, and have consistent
-# daily close alignment. RMAU.L remains on LSE (the deepest liquidity venue
-# for this specific ETC; no .MI listing with equivalent AUM exists).
+# Verified liquid European tickers (mix of Xetra .DE and LSE .L):
+#   EUNL.DE  iShares Core MSCI World UCITS ETF            Xetra (EUR)   2005
+#   IUS3.DE  iShares MSCI World SRI UCITS ETF             Xetra (EUR)   2019
+#   WEBG.L   Amundi MSCI World Small Cap ESG Leaders      LSE (GBP)    ~2019
+#   VVSM.DE  VanEck Semiconductor UCITS ETF               Xetra (EUR)   2020
+#   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF     Xetra (EUR)   2007
+#   RMAU.L   HanETF Royal Mint Physical Gold ETC          LSE (USD)    ~2019
 #
-#   SWDA.MI   iShares Core MSCI World UCITS ETF       Borsa Italiana (EUR)  2009
-#   WEBG.MI   Amundi MSCI World Small Cap ESG Leaders Borsa Italiana (EUR)  ~2019
-#   SMH.MI    VanEck Semiconductor ETF UCITS           Borsa Italiana (EUR)  ~2020
-#   X7G7.MI   Xtrackers II EZ Gov Bond 7-10 UCITS     Borsa Italiana (EUR)  ~2009
-#   RMAU.L    HanETF Royal Mint Physical Gold ETC      LSE (USD)             ~2019
-#
-# Binding data constraint: WEBG.MI and SMH.MI both launched ~2019/2020.
-# START_DATE = 2020-01-01 ensures clean data across all 5 tickers.
+# Binding data constraint: VVSM.DE (inception 2020) and IUS3.DE (2019).
+# START_DATE = 2021-01-01 guarantees all 6 tickers have reliable volume.
 TICKERS: list[str] = [
-    "SWDA.MI",   # iShares Core MSCI World UCITS ETF        – core global equity
-    "WEBG.MI",   # Amundi MSCI World Small Cap ESG Leaders  – ESG small-cap growth
-    "SMH.MI",    # VanEck Semiconductor UCITS ETF           – thematic AI/chip satellite
-    "X7G7.MI",   # Xtrackers II EZ Gov Bond 7-10 UCITS ETF – duration / rate hedge
-    "RMAU.L",    # HanETF Royal Mint Physical Gold ETC      – ESG-screened gold
+    "EUNL.DE",  # iShares Core MSCI World UCITS ETF        – core global equity anchor
+    "IUS3.DE",  # iShares MSCI World SRI UCITS ETF         – ESG large-cap world
+    "WEBG.L",   # Amundi MSCI World Small Cap ESG Leaders  – ESG small-cap growth
+    "VVSM.DE",  # VanEck Semiconductor UCITS ETF           – thematic AI/chip satellite
+    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF – duration / rate hedge
+    "RMAU.L",   # HanETF Royal Mint Physical Gold ETC      – ESG-screened gold
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2020-01-01"   # WEBG.MI and SMH.MI both live by Jan 2020; clean joint series from here
+START_DATE = "2021-01-01"   # VVSM.DE and IUS3.DE have reliable volume from 2021; all 6 clean from here
 END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
 
 # ── Lookback Window (Walk-Forward) ────────────────────────────────────────
@@ -104,7 +102,7 @@ _COMMISSION_RATE: float = COMMISSION_BPS / 10_000.0   # → 0.0015
 
 # ── Benchmark for Tear Sheet ──────────────────────────────────────────────
 # Set to None (no quotes) to omit the benchmark from the report.
-BENCHMARK_TICKER = "SWDA.MI"  # iShares Core MSCI World — like-for-like EUR benchmark
+BENCHMARK_TICKER = "EUNL.DE"  # iShares Core MSCI World (Xetra) — like-for-like EUR benchmark
 
 # ── Output Directory ──────────────────────────────────────────────────────
 OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
@@ -315,8 +313,33 @@ def main() -> None:
         prices = raw[["Close"]].copy()
         prices.columns = TICKERS
 
+    # ── Drop columns that are entirely empty (ticker not found at all) ────
     prices = prices.dropna(axis=1, how="all")
-    prices = prices.ffill().dropna()
+
+    # ── Per-ticker diagnostic: show date coverage and NaN density ─────────
+    # This block lets you see exactly which ticker is causing data loss
+    # before the joint dropna() trims the DataFrame.
+    print("\n[DEBUG] Per-ticker data coverage (before joint ffill/dropna):")
+    print(f"  {'Ticker':<12} {'First date':<14} {'Last date':<14} {'NaN rows':>9} {'Total rows':>11}")
+    print(f"  {'-'*12} {'-'*14} {'-'*14} {'-'*9} {'-'*11}")
+    for col in prices.columns:
+        s = prices[col]
+        nan_count = int(s.isna().sum())
+        non_null  = s.dropna()
+        first_dt  = non_null.index.min().date() if not non_null.empty else "N/A"
+        last_dt   = non_null.index.max().date() if not non_null.empty else "N/A"
+        total     = len(s)
+        print(f"  {col:<12} {str(first_dt):<14} {str(last_dt):<14} {nan_count:>9} {total:>11}")
+
+    # ── Holiday gap fill: carry the last known close across market holidays─
+    # ffill() handles UK/German/Italian bank holiday mismatches so that a
+    # single missing day in RMAU.L (UK holiday) doesn't drop an entire
+    # cross-market row from the joint DataFrame.
+    prices = prices.ffill()
+
+    # ── Drop only the leading rows where ANY ticker has no data yet ────────
+    # (i.e. before the youngest ETF's actual inception date)
+    prices = prices.dropna()
 
     available: list[str] = prices.columns.tolist()
     print(f"[INFO] Tickers with valid data : {available}")
@@ -447,7 +470,7 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ Risk-On UCITS 5-ETF │ SWDA+WEBG+SMH+X7G7+RMAU │ "
+            "HRP Walk-Forward │ UCITS 6-ETF Growth │ EUNL+IUS3+WEBG+VVSM+DBXN+RMAU │ "
             f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor"
         ),
         match_dates=True,
