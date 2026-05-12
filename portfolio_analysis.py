@@ -128,6 +128,21 @@ MAX_WEIGHTS: dict[str, float] = {
     "VAGF.DE": 0.25,   # Global agg bond:     cap 25% — prevents bond-crowding; max 50% combined bonds
 }
 
+# ── Strategy Mode ────────────────────────────────────────────────────
+# "hrp"          — Walk-forward HRP (dynamic; adapts weights to recent vol/correlation)
+# "equal_weight" — Fixed 1/N equal weights, rebalanced on schedule (Golden Butterfly style)
+#
+# When to use each:
+#   equal_weight  → when the portfolio buckets ARE the diversification (Golden Butterfly).
+#                   Simple, transparent, and avoids HRP over-weighting near-zero-vol assets
+#                   like XEON.DE. Matches the original proposal methodology exactly.
+#   hrp           → for equity-heavy or higher-vol universes where the correlation structure
+#                   changes meaningfully over time and dynamic tilts add value.
+#
+# For the Golden Butterfly (EUNL+WDSC+DBXN+XEON+SGLD), "equal_weight" is the correct
+# mode: it reproduces the proposal's methodology and avoids the cash-crowding problem.
+STRATEGY_MODE: str = "equal_weight"   # "equal_weight" | "hrp"
+
 # ── Commission + Slippage Model (Friction #1) ─────────────────────────────
 # Combined estimate: broker commission + bid/ask half-spread.
 # 15 bps (0.15%) is a conservative but realistic figure for ETF trades.
@@ -167,17 +182,15 @@ OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
 # ║    close is never included in the optimisation window.                    ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-class HRPWithT1Delay(bt.Algo):
+class WeightAlgoWithT1Delay(bt.Algo):
     """
-    Walk-forward HRP optimiser with built-in T+1 execution delay and
-    a configurable minimum weight floor.
+    Unified weighting algo with T+1 execution delay.
+    Supports 'equal_weight' (fixed 1/N) and 'hrp' (walk-forward HRP) modes.
 
     State machine (per bar):
-      ① If pending weights exist  →  inject them into target.temp and
-        return True so bt.algos.Rebalance() fires.  (Day T+1 execution)
-      ② Else if this bar is a scheduled rebalance trigger  →  compute HRP
-        on strictly-past data, store as pending, return False.  (Day T calc)
-      ③ Else  →  return False.  (ordinary bar; no action)
+      ① If pending weights exist  →  inject into target.temp → return True  (Day T+1)
+      ② Else if trigger day       →  compute weights → store pending → return False (Day T)
+      ③ Else                      →  return False  (no action)
     """
 
     def __init__(
@@ -187,24 +200,30 @@ class HRPWithT1Delay(bt.Algo):
         min_weight: float,
         rebalance_freq: str,
         max_weights: dict[str, float] | None = None,
+        mode: str = "hrp",
     ) -> None:
         super().__init__()
         self._prices        = all_prices
         self._lookback_days = int(lookback_years * 252)
         self._min_weight    = min_weight
-        self._max_weights   = max_weights or {}   # {ticker: cap}; empty = no caps
+        self._max_weights   = max_weights or {}
         self._freq          = rebalance_freq.lower()
+        self._mode          = mode.lower()
 
         # Scheduling state
         self._last_trigger_date: pd.Timestamp | None = None
 
-        # T+1 pending queue — holds at most one set of weights at a time
+        # T+1 pending queue
         self._pending_weights: dict[str, float] | None = None
 
         if self._freq not in ("monthly", "quarterly", "semi-annual", "yearly"):
             raise ValueError(
                 f"Invalid REBALANCE_FREQ '{rebalance_freq}'. "
                 "Choose from: monthly, quarterly, semi-annual, yearly."
+            )
+        if self._mode not in ("hrp", "equal_weight"):
+            raise ValueError(
+                f"Invalid STRATEGY_MODE '{mode}'. Choose from: hrp, equal_weight."
             )
 
     # ── Scheduling helper ─────────────────────────────────────────────────
@@ -222,6 +241,19 @@ class HRPWithT1Delay(bt.Algo):
             return half(date) > half(prev)
         # yearly
         return date.year > prev.year
+
+    # ── Equal-weight computation ───────────────────────────────────────────
+    def _compute_equal_weight(
+        self, assets: list[str]
+    ) -> dict[str, float]:
+        """
+        Returns a perfectly balanced 1/N allocation across all assets.
+        This is the correct mode for the Golden Butterfly portfolio where
+        the diversification is encoded in the bucket structure, not in
+        dynamic variance-minimisation.
+        """
+        w = 1.0 / len(assets)
+        return {a: w for a in assets}
 
     # ── Riskfolio-Lib HRP call ────────────────────────────────────────────
     def _compute_hrp(
@@ -271,13 +303,11 @@ class HRPWithT1Delay(bt.Algo):
 
         weights: pd.Series = w_df["weights"].copy()
 
-        # Identify which capped assets are present in this window
-        caps   = {a: c for a, c in self._max_weights.items() if a in weights.index}
-        # Uncapped assets = everything not in MAX_WEIGHTS — these absorb excess
-        free   = [a for a in weights.index if a not in self._max_weights]
+        # Identify capped assets; receivers computed dynamically each pass
+        # (works for both mixed and all-capped universes).
+        caps = {a: c for a, c in self._max_weights.items() if a in weights.index}
 
-        # Run the 4-step clipper twice so the floor is tight after renorm
-        for _pass in range(2):
+        for _pass in range(3):
 
             # ── Step 1: Hard-clip capped assets ───────────────────────────
             excess = 0.0
@@ -286,15 +316,18 @@ class HRPWithT1Delay(bt.Algo):
                     excess += weights[asset] - cap
                     weights[asset] = cap
 
-            # ── Step 2: Redistribute excess to uncapped (equity) assets ───
-            if excess > 0.0 and free:
-                free_total = weights[free].sum()
-                if free_total > 0.0:
-                    # Proportional to current free-asset weights
-                    weights[free] += excess * (weights[free] / free_total)
-                else:
-                    # Fallback: equal share
-                    weights[free] += excess / len(free)
+            # ── Step 2: Redistribute excess to assets below their own cap ─
+            if excess > 0.0:
+                receivers = [
+                    a for a in weights.index
+                    if weights[a] < self._max_weights.get(a, 1.0)
+                ]
+                if receivers:
+                    recv_total = weights[receivers].sum()
+                    if recv_total > 0.0:
+                        weights[receivers] += excess * (weights[receivers] / recv_total)
+                    else:
+                        weights[receivers] += excess / len(receivers)
 
             # ── Step 3: Apply MIN_WEIGHT floor ────────────────────────────
             if self._min_weight > 0.0:
@@ -322,33 +355,38 @@ class HRPWithT1Delay(bt.Algo):
         if not self._is_trigger_day(target.now):
             return False   # ordinary bar; nothing to do
 
-        # Mark this date as the last trigger (even during warmup) so the
-        # scheduler advances correctly and doesn't fire on every daily bar.
         self._last_trigger_date = target.now
 
-        # ══ Phase C: Warmup guard ══════════════════════════════════════════
-        # Slice prices to rows STRICTLY BEFORE today (zero-lookahead bias).
+        # ══ Phase C: Warmup guard (HRP only) ══════════════════════════════
+        # Equal-weight needs no warmup — skip straight to weight computation.
         past_prices: pd.DataFrame = self._prices.loc[
             self._prices.index < target.now
         ]
-        if len(past_prices) < self._lookback_days:
+        if self._mode == "hrp" and len(past_prices) < self._lookback_days:
             return False   # not enough history yet; stay in cash
 
-        # ══ Phase D: Rolling-window returns ════════════════════════════════
-        window_prices: pd.DataFrame  = past_prices.iloc[-self._lookback_days:]
-        window_returns: pd.DataFrame = window_prices.pct_change().dropna()
-        if len(window_returns) < 2:
-            return False
+        # ══ Phase D: Rolling-window returns (HRP only) ════════════════════
+        window_returns: pd.DataFrame | None = None
+        if self._mode == "hrp":
+            window_prices   = past_prices.iloc[-self._lookback_days:]
+            window_returns  = window_prices.pct_change().dropna()
+            if len(window_returns) < 2:
+                return False
 
-        # ══ Phase E: HRP optimisation (Day T) ══════════════════════════════
-        weights = self._compute_hrp(window_returns)
-        if weights is None:
-            print(f"[WARN] HRP failed on {target.now.date()}; skipping rebalance.")
-            return False
+        # ══ Phase E: Compute weights (Day T) ══════════════════════════════
+        available_assets = list(past_prices.columns) if self._mode == "equal_weight" \
+                           else list(window_returns.columns)  # type: ignore[union-attr]
 
-        # Store as pending — will be executed on Day T+1 (next bar)
+        if self._mode == "equal_weight":
+            weights = self._compute_equal_weight(available_assets)
+        else:
+            weights = self._compute_hrp(window_returns)  # type: ignore[arg-type]
+            if weights is None:
+                print(f"[WARN] HRP failed on {target.now.date()}; skipping rebalance.")
+                return False
+
         self._pending_weights = weights
-        return False   # do NOT rebalance today
+        return False   # execute on Day T+1
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -446,19 +484,25 @@ def main() -> None:
     # SelectAll:       make every ticker available to Rebalance
     # HRPWithT1Delay:  owns scheduling + HRP calc (Day T) + T+1 execution
     # Rebalance:       executes trades when HRPWithT1Delay returns True
-    hrp_algo = HRPWithT1Delay(
+    weight_algo = WeightAlgoWithT1Delay(
         all_prices    = prices,
         lookback_years= LOOKBACK_YEARS,
         min_weight    = MIN_WEIGHT,
         rebalance_freq= REBALANCE_FREQ,
         max_weights   = MAX_WEIGHTS,
+        mode          = STRATEGY_MODE,
+    )
+
+    strategy_name = (
+        "EqualWeight_GoldenButterfly" if STRATEGY_MODE == "equal_weight"
+        else "HRP_Production"
     )
 
     strategy = bt.Strategy(
-        "HRP_Production",
+        strategy_name,
         [
             bt.algos.SelectAll(),
-            hrp_algo,
+            weight_algo,
             bt.algos.Rebalance(),
         ],
     )
@@ -476,9 +520,9 @@ def main() -> None:
     result = bt.run(backtest)
 
     # ── Extract equity curve → daily returns ──────────────────────────────
-    equity_curve: pd.Series     = result.prices["HRP_Production"]
+    equity_curve: pd.Series     = result.prices[strategy_name]
     strategy_returns: pd.Series = equity_curve.pct_change().dropna()
-    strategy_returns.name = "HRP_Production"
+    strategy_returns.name = strategy_name
 
     # Strip the flat cash warmup prefix so QuantStats metrics reflect
     # only the live-trading phase (after the first real rebalance on T+1).
@@ -500,7 +544,7 @@ def main() -> None:
     print(f"[INFO] Total return (full period)     : {total_return:.2%}")
 
     # ── Save historical walk-forward weights ──────────────────────────────
-    weights_history: pd.DataFrame = result.get_security_weights("HRP_Production")
+    weights_history: pd.DataFrame = result.get_security_weights(strategy_name)
     weights_path = OUTPUT_DIR / "hrp_weights_history.csv"
     weights_history.to_csv(weights_path)
     print(f"\n[INFO] Historical weights saved → {weights_path}")
@@ -511,7 +555,8 @@ def main() -> None:
 
     live_weights = weights_history.loc[weights_history.sum(axis=1) > 0]
     if not live_weights.empty:
-        print("\n[INFO] Most recent HRP allocation (post-floor):")
+        mode_label = "Equal-Weight (20% each)" if STRATEGY_MODE == "equal_weight" else "HRP Walk-Forward"
+        print(f"\n[INFO] Most recent {mode_label} allocation:")
         for ticker, wgt in live_weights.iloc[-1].sort_values(ascending=False).items():
             print(f"         {ticker:<6}  {wgt:.4%}")
 
@@ -547,9 +592,9 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ Golden Butterfly ESG 5-ETF │ EUNL+WDSC+DBXN+XEON+SGLD │ "
-            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ "
-            "EUNL≤40% WDSC/DBXN/XEON/SGLD≤30% │ Annual Rebal"
+            f"{'Equal-Weight' if STRATEGY_MODE == 'equal_weight' else 'HRP Walk-Forward'}"
+            " │ Golden Butterfly ESG 5-ETF │ EUNL+WDSC+DBXN+XEON+SGLD │ "
+            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ Annual Rebal"
         ),
         match_dates=True,
     )
