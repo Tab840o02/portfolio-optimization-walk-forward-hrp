@@ -48,56 +48,46 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# European UCITS Portfolio — 5+ Year Horizon (7 ETFs across 3 sleeves)
+# Risk-On European UCITS Portfolio — 5-Year Growth Horizon (5 ETFs)
+# XEON (cash proxy) removed: HRP forced to allocate among risk assets only.
 #
-# ESG Half:
-#   SUSW.L   iShares MSCI World SRI UCITS ETF           LSE (GBP)    ~2018
-#   WEBG.L   Amundi MSCI World Small Cap ESG Leaders    LSE (GBP)    ~2020
-#            (fallback if no data: WEBG.PA on Euronext Paris)
-#   RMAU.L   HanETF Royal Mint Physical Gold ETC         LSE (USD)    ~2019
+# All four equity/bond ETFs use the .MI suffix (Borsa Italiana / Euronext Milan)
+# so they share Italian exchange holidays, trade in EUR, and have consistent
+# daily close alignment. RMAU.L remains on LSE (the deepest liquidity venue
+# for this specific ETC; no .MI listing with equivalent AUM exists).
 #
-# Traditional Half:
-#   SWDA.L   iShares Core MSCI World UCITS ETF           LSE (USD)     2009
-#   X7G7.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF    Xetra (EUR)   2007
-#   XEON.DE  Xtrackers II EUR Overnight Rate Swap UCITS  Xetra (EUR)   2008
+#   SWDA.MI   iShares Core MSCI World UCITS ETF       Borsa Italiana (EUR)  2009
+#   WEBG.MI   Amundi MSCI World Small Cap ESG Leaders Borsa Italiana (EUR)  ~2019
+#   SMH.MI    VanEck Semiconductor ETF UCITS           Borsa Italiana (EUR)  ~2020
+#   X7G7.MI   Xtrackers II EZ Gov Bond 7-10 UCITS     Borsa Italiana (EUR)  ~2009
+#   RMAU.L    HanETF Royal Mint Physical Gold ETC      LSE (USD)             ~2019
 #
-# Thematic Satellite:
-#   SMH      VanEck Semiconductor ETF (NASDAQ, USD)  — best historical depth
-#            For live investing substitute UCITS equivalent SEMI.L (LSE, Dec 2019)
-#            SMH chosen over BOTZ: 10+ year price history vs BOTZ's 8 years.
-#
-# Binding data constraint: WEBG.L (inception ~2020) determines the joint
-# series start via ffill().dropna(). With LOOKBACK_YEARS=1.5 the first live
-# rebalance fires ~1.5 years after all 7 tickers share a common start date.
+# Binding data constraint: WEBG.MI and SMH.MI both launched ~2019/2020.
+# START_DATE = 2020-01-01 ensures clean data across all 5 tickers.
 TICKERS: list[str] = [
-    # ── ESG Half ──────────────────────────────────────────────────────────
-    "SUSW.L",   # iShares MSCI World SRI UCITS ETF         – ESG large-cap world
-    "WEBG.L",   # Amundi MSCI World Small Cap ESG Leaders  – ESG small-cap world
-    "RMAU.L",   # HanETF Royal Mint Physical Gold ETC      – ESG-screened gold
-    # ── Traditional Half ──────────────────────────────────────────────────
-    "SWDA.L",   # iShares Core MSCI World UCITS ETF        – broad MSCI World
-    "X7G7.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF – duration anchor
-    "XEON.DE",  # Xtrackers II EUR Overnight Rate Swap UCITS – near-cash buffer
-    # ── Thematic Satellite ────────────────────────────────────────────────
-    "SMH",      # VanEck Semiconductor ETF (NASDAQ, USD)   – semiconductor theme
+    "SWDA.MI",   # iShares Core MSCI World UCITS ETF        – core global equity
+    "WEBG.MI",   # Amundi MSCI World Small Cap ESG Leaders  – ESG small-cap growth
+    "SMH.MI",    # VanEck Semiconductor UCITS ETF           – thematic AI/chip satellite
+    "X7G7.MI",   # Xtrackers II EZ Gov Bond 7-10 UCITS ETF – duration / rate hedge
+    "RMAU.L",    # HanETF Royal Mint Physical Gold ETC      – ESG-screened gold
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2017-01-01"   # pre-dates all UCITS tickers; actual joint start set by latest inception
+START_DATE = "2020-01-01"   # WEBG.MI and SMH.MI both live by Jan 2020; clean joint series from here
 END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
 
 # ── Lookback Window (Walk-Forward) ────────────────────────────────────────
 # Years of past daily returns fed into Riskfolio-Lib on each rebalance date.
 # The strategy stays in CASH during this warmup period.
-# 1.5 years ≈ 378 observations — sufficient for a stable 7×7 correlation matrix.
-# Reduced from 3 years to preserve live-trading history given the post-2018/2020
-# inception dates of SUSW.L, WEBG.L, and RMAU.L.
-LOOKBACK_YEARS: float = 1.5
+# 1 year ≈ 252 observations — sufficient for a stable 5×5 correlation matrix.
+# With data only from 2020, a 1-year lookback maximises live-trading history
+# (first rebalance fires Jan 2021, giving ~5 years of out-of-sample simulation).
+LOOKBACK_YEARS: float = 1.0
 
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
 # How often a new HRP calculation is triggered.
 # Options: "monthly" | "quarterly" | "yearly"
-REBALANCE_FREQ = "quarterly"
+REBALANCE_FREQ = "monthly"   # monthly reactions to volatility spikes in SMH/WEBG
 
 # ── Weight Floor (Friction #3) ────────────────────────────────────────────
 # Minimum allocation per asset after HRP optimisation.
@@ -114,7 +104,7 @@ _COMMISSION_RATE: float = COMMISSION_BPS / 10_000.0   # → 0.0015
 
 # ── Benchmark for Tear Sheet ──────────────────────────────────────────────
 # Set to None (no quotes) to omit the benchmark from the report.
-BENCHMARK_TICKER = "SWDA.L"   # iShares Core MSCI World — like-for-like benchmark
+BENCHMARK_TICKER = "SWDA.MI"  # iShares Core MSCI World — like-for-like EUR benchmark
 
 # ── Output Directory ──────────────────────────────────────────────────────
 OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
@@ -457,7 +447,7 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ UCITS ESG + Traditional + Thematic │ "
+            "HRP Walk-Forward │ Risk-On UCITS 5-ETF │ SWDA+WEBG+SMH+X7G7+RMAU │ "
             f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor"
         ),
         match_dates=True,
