@@ -3,18 +3,18 @@
 Portfolio Analysis & Backtesting Tool  (Production-Ready Edition)
 ==================================================================
 European UCITS Walk-Forward HRP  —  5+ Year Investment Horizon
-# Universe (4 ETFs) — ESG-Pure Balanced | SUSW + SUSM + SUOE + VAGF:
-#   Developed-Mkt Equity  — SUSW.L  iShares MSCI World SRI
-#   Emerging-Mkt Equity   — SUSM.L  iShares MSCI EM SRI
-#   EUR IG Credit ESG     — SUOE.L  iShares € Corp Bond ESG SRI
-#   Global Agg Bond Hdg   — VAGF.DE Vanguard Global Aggregate Bond EUR Hedged
-# All four are direct client-target holdings — no proxies needed.
-# Binding data constraint: VAGF.DE (Xetra inception 2019-06-18).
+# Universe (5 ETFs) — European Golden Butterfly | ESG-Adapted:
+#   Core Equity        — EUNL.DE  iShares Core MSCI World (Xetra)
+#   Small Cap Equity   — WDSC.L   SPDR MSCI World Small Cap (proxy: Amundi MSCI World SC ESG)
+#   Gov Bond 7-10Y     — DBXN.DE  Xtrackers II EZ Gov Bond 7-10 (Xetra)
+#   Cash/Overnight     — XEON.DE  Xtrackers EUR Overnight Rate Swap (Xetra)
+#   Physical Gold      — SGLD.L   Invesco Physical Gold ETC (LSE)
+# Binding constraint: all 5 have data from 2017. Warmup: 2018. Live: Jan 2019+.
 
 Walk-Forward HRP with three real-world market frictions:
   1. Commissions & Slippage  – 15 bps per-trade cost via bt.Backtest
   2. T+1 Execution Delay     – weights computed on Day T, traded on Day T+1
-  3. Weight Floor            – MIN_WEIGHT = 10% minimum per asset (4 × 10% = 40% committed)
+  3. Weight Floor            – MIN_WEIGHT = 10% minimum per asset (5 × 10% = 50% committed)
 
 Pipeline (zero lookahead bias preserved throughout):
   Step 1: Data Ingestion       – yfinance (adjusted-close prices)
@@ -51,61 +51,65 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# 100% ESG UCITS Portfolio — 4 direct client-target holdings (NO proxies)
+# European Golden Butterfly (ESG-Adapted) — "Proposta MAMMA" portfolio
+# Each holding maps to one of the five equal Golden Butterfly "buckets".
 #
-# CLIENT HOLDINGS (exact tickers — traded directly):
-#   SUSW.L   iShares MSCI World SRI UCITS ETF EUR (Acc)         LSE (EUR)  Oct 2017
-#            → Developed-market ESG equity core. Screens MSCI World on ESG
-#              criteria; removes ESG laggards. ~1,500 holdings, EUR-denominated.
-#   SUSM.L   iShares MSCI EM SRI UCITS ETF USD (Acc)           LSE (USD)  Jul 2016
-#            → Emerging-market ESG equity satellite. Higher growth potential
-#              than DM; higher vol — capped at 20% to manage concentration risk.
-#   SUOE.L   iShares € Corp Bond ESG SRI UCITS ETF EUR (Dist)  LSE (EUR)  Jun 2018
-#            → EUR investment-grade credit with strict ESG/SRI overlay.
-#              Provides carry and acts as equity offset in moderate sell-offs.
-#   VAGF.DE  Vanguard Global Aggregate Bond UCITS ETF EUR Hdg  Xetra (EUR) Jun 2019
-#            → Broad global fixed-income (govts + IG corps, 30+ countries),
-#              currency-hedged to EUR. Lowest-volatility asset; anchor in
-#              HRP's minimum-variance clustering.
+# CLIENT TARGET HOLDINGS (from PDF proposal):
+#   iShares Core MSCI World UCITS ETF (Acc)               ISIN: IE00B4L5Y983
+#   Amundi MSCI World Small Cap ESG Broad Transition (Acc) ISIN: IE000UZZ5D45
+#   Xtrackers II EZ Gov Bond 7-10 UCITS ETF (Acc)         ISIN: LU0290357176
+#   Xtrackers II EUR Overnight Rate Swap UCITS ETF (Acc)   ISIN: LU0290358497
+#   Invesco Physical Gold A                                ISIN: IE00B579F325
 #
-# BINDING DATA CONSTRAINT: VAGF.DE inception 2019-06-18.
-#   START_DATE = 2019-01-01; data available from June 2019 after joint dropna.
-#   Warmup (1 yr lookback): Jun 2019 – Jun 2020.
-#   First live semi-annual rebalance: July 2020.
-#   Live backtest covers: 2020 COVID recovery, 2021 bull, 2022 rate-shock, 2023–2026.
+# PROXY / DIRECT TICKERS used here:
+#   EUNL.DE  iShares Core MSCI World (Acc)          Xetra (EUR) 2005  ← direct listing
+#   WDSC.L   SPDR MSCI World Small Cap UCITS ETF    LSE (USD)   2017  ← proxy for Amundi SC ESG
+#            (IE000UZZ5D45 has no yfinance ticker; WDSC.L tracks same MSCI World SC index)
+#   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 (Acc)   Xetra (EUR) 2007  ← direct listing
+#   XEON.DE  Xtrackers EUR Overnight Rate Swap      Xetra (EUR) 2007  ← direct listing
+#   SGLD.L   Invesco Physical Gold ETC              LSE (USD)   2009  ← same issuer/fund
+#
+# IMPORTANT — XEON.DE (cash proxy): variance ≈ 0 in 2017-2021 (ECB negative rates),
+# then ~0.004% daily in 2022-2024 (ECB 4%). HRP naturally overweights it as the
+# lowest-vol asset. Capped at 30% to prevent it from crowding out growth assets.
+#
+# All 5 tickers have data from Jan 2017. Binding constraint: WDSC.L (Mar 2017).
+# START_DATE 2018-01-01; warmup Jan 2018 - Dec 2018; live: Jan 2019 - May 2026.
+# 7+ year live period covers COVID crash, 2022 rate shock, 2023-2026 recovery.
 TICKERS: list[str] = [
-    "SUSW.L",   # iShares MSCI World SRI UCITS ETF EUR (Acc)         – DM ESG equity core
-    "SUSM.L",   # iShares MSCI EM SRI UCITS ETF USD (Acc)            – EM ESG equity satellite
-    "SUOE.L",   # iShares € Corp Bond ESG SRI UCITS ETF EUR (Dist)   – EUR IG credit ESG
-    "VAGF.DE",  # Vanguard Global Aggregate Bond UCITS ETF EUR Hdg   – global agg anchor
+    "EUNL.DE",  # iShares Core MSCI World UCITS ETF (Acc)          – global equity core
+    "WDSC.L",   # SPDR MSCI World Small Cap UCITS ETF              – small cap growth (proxy: Amundi SC ESG)
+    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF (Acc)   – sovereign duration anchor
+    "XEON.DE",  # Xtrackers EUR Overnight Rate Swap UCITS ETF      – cash / capital preservation
+    "SGLD.L",   # Invesco Physical Gold ETC                        – inflation hedge / tail risk
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2019-01-01"   # VAGF.DE (Vanguard Global Agg) is binding constraint — Xetra inception Jun 2019
+START_DATE = "2018-01-01"   # all 5 tickers have data from 2017; 2018 start gives full warmup year
 END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
 
 # ── Lookback Window (Walk-Forward) ────────────────────────────────────────
 # Years of past daily returns fed into Riskfolio-Lib on each rebalance date.
 # The strategy stays in CASH during this warmup period.
-# 1 year ≈ 252 observations — sufficient for a stable 4×4 correlation matrix.
-# Data starts Jun 2019 (VAGF.DE inception). With 1-yr lookback, warmup ends
-# Jun 2020. First live rebalance: Jul 2020 (semi-annual trigger).
-# Live period covers: 2020 COVID recovery, 2021 bull, 2022 rate-shock, 2023–2026.
+# 1 year ≈ 252 observations — sufficient for a stable 5×5 correlation matrix.
+# All 5 tickers have data from 2017; warmup 2018 gives live trading from Jan 2019.
+# 7+ year live period: covers COVID (Feb-Mar 2020), 2022 rate shock, 2023-2026 recovery.
 LOOKBACK_YEARS: float = 1.0
 
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
 # How often a new HRP calculation is triggered.
 # Options: "monthly" | "quarterly" | "semi-annual" | "yearly"
-REBALANCE_FREQ = "semi-annual"   # semi-annual; matches client's real-world rebalancing cadence
+REBALANCE_FREQ = "yearly"   # annual December rebalance; matches the proposal ("rimettiamo in ordine a dicembre")
 
 # ── Weight Floor (Friction #3) ────────────────────────────────────────────
 # Minimum allocation per asset after HRP optimisation.
-# 10% floor mandated by client: 4 assets × 10% = 40% committed minimum.
-# Remaining 60% allocated freely by HRP's minimum-variance clustering.
-# This is a strong constraint that prevents any asset from being crowded out,
-# appropriate given the small 4-asset universe and semi-annual rebalancing.
-# Set to 0.0 to disable the floor and allow pure HRP weights.
-MIN_WEIGHT: float = 0.10   # 10% minimum — client mandate; ensures all 4 assets always held
+# 10% floor: 5 assets × 10% = 50% committed. Remaining 50% allocated freely by HRP.
+# This prevents any single asset from being zeroed out by HRP, ensuring diversification
+# consistent with the Golden Butterfly philosophy (each bucket always held).
+# Note: the original Golden Butterfly uses fixed 20% each. HRP lets the algorithm
+# dynamically tilt within the 10%-30% range, adapting to changing market regimes.
+# Set to 0.0 to allow pure HRP weights (may heavily overweight XEON.DE).
+MIN_WEIGHT: float = 0.10   # 10% floor — each of the 5 "buckets" always held
 
 # ── Per-Asset Maximum Weight Caps ──────────────────────────────────────────
 # Max caps rationale for 4-asset ESG-pure universe:
@@ -133,7 +137,7 @@ _COMMISSION_RATE: float = COMMISSION_BPS / 10_000.0   # → 0.0015
 
 # ── Benchmark for Tear Sheet ──────────────────────────────────────────────
 # Set to None (no quotes) to omit the benchmark from the report.
-BENCHMARK_TICKER = "SUSW.L"   # iShares MSCI World SRI (LSE) — primary equity component; natural benchmark
+BENCHMARK_TICKER = "EUNL.DE"  # iShares Core MSCI World (Xetra) — illustrates how multi-asset smooths pure equity
 
 # ── Output Directory ──────────────────────────────────────────────────────
 OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
@@ -543,9 +547,9 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ ESG-Pure 4-ETF │ SUSW+SUSM+SUOE+VAGF │ "
+            "HRP Walk-Forward │ Golden Butterfly ESG 5-ETF │ EUNL+WDSC+DBXN+XEON+SGLD │ "
             f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ "
-            "SUSW≤50% SUSM≤20% SUOE≤25% VAGF≤25% │ Semi-Annual Rebal"
+            "EUNL≤40% WDSC/DBXN/XEON/SGLD≤30% │ Annual Rebal"
         ),
         match_dates=True,
     )
