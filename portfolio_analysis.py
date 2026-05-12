@@ -2,6 +2,12 @@
 """
 Portfolio Analysis & Backtesting Tool  (Production-Ready Edition)
 ==================================================================
+European UCITS Walk-Forward HRP  —  5+ Year Investment Horizon
+Universe (7 ETFs):
+  ESG Half      — SUSW.L (MSCI World SRI), WEBG.L (World SmallCap ESG), RMAU.L (Gold ETC)
+  Traditional   — SWDA.L (MSCI World), X7G7.DE (EZ Gov Bond 7-10), XEON.DE (EUR O/N Rate)
+  Thematic Sat. — SMH (VanEck Semiconductor, NASDAQ proxy; UCITS: SEMI.L)
+
 Walk-Forward HRP with three real-world market frictions:
   1. Commissions & Slippage  – 15 bps per-trade cost via bt.Backtest
   2. T+1 Execution Delay     – weights computed on Day T, traded on Day T+1
@@ -16,6 +22,7 @@ Pipeline (zero lookahead bias preserved throughout):
 
 Outputs (saved to OUTPUT_DIR):
   hrp_weights_history.csv  – time-series of walk-forward allocations
+  hrp_returns.csv          – daily returns for the live-trading period
   hrp_tearsheet.html       – full QuantStats performance tear sheet
 """
 
@@ -41,32 +48,51 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# ┌─────────────────────────────────────────────────────────────────────────┐
-# │  15-Year Long-Term Savings Plan — 4 Core Asset Classes                 │
-# │                                                                         │
-# │  SPY  │ S&P 500          │ SPDR S&P 500 ETF           │ since 1993     │
-# │  EEM  │ Emerging Markets │ iShares MSCI EM ETF         │ since Apr 2003 │
-# │  URA  │ Uranium          │ Global X Uranium ETF        │ since Nov 2010 │
-# │  GLD  │ Gold             │ SPDR Gold Shares (physical) │ since Nov 2004 │
-# │                                                                         │
-# │  Binding date constraint: URA inception = 4 Nov 2010                   │
-# └─────────────────────────────────────────────────────────────────────────┘
+# European UCITS Portfolio — 5+ Year Horizon (7 ETFs across 3 sleeves)
+#
+# ESG Half:
+#   SUSW.L   iShares MSCI World SRI UCITS ETF           LSE (GBP)    ~2018
+#   WEBG.L   Amundi MSCI World Small Cap ESG Leaders    LSE (GBP)    ~2020
+#            (fallback if no data: WEBG.PA on Euronext Paris)
+#   RMAU.L   HanETF Royal Mint Physical Gold ETC         LSE (USD)    ~2019
+#
+# Traditional Half:
+#   SWDA.L   iShares Core MSCI World UCITS ETF           LSE (USD)     2009
+#   X7G7.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF    Xetra (EUR)   2007
+#   XEON.DE  Xtrackers II EUR Overnight Rate Swap UCITS  Xetra (EUR)   2008
+#
+# Thematic Satellite:
+#   SMH      VanEck Semiconductor ETF (NASDAQ, USD)  — best historical depth
+#            For live investing substitute UCITS equivalent SEMI.L (LSE, Dec 2019)
+#            SMH chosen over BOTZ: 10+ year price history vs BOTZ's 8 years.
+#
+# Binding data constraint: WEBG.L (inception ~2020) determines the joint
+# series start via ffill().dropna(). With LOOKBACK_YEARS=1.5 the first live
+# rebalance fires ~1.5 years after all 7 tickers share a common start date.
 TICKERS: list[str] = [
-    "SPY",   # SPDR S&P 500 ETF Trust          – US large-cap equities
-    "EEM",   # iShares MSCI Emerging Markets   – EM equities
-    "URA",   # Global X Uranium ETF            – uranium miners & royalties
-    "GLD",   # SPDR Gold Shares                – physical gold
+    # ── ESG Half ──────────────────────────────────────────────────────────
+    "SUSW.L",   # iShares MSCI World SRI UCITS ETF         – ESG large-cap world
+    "WEBG.L",   # Amundi MSCI World Small Cap ESG Leaders  – ESG small-cap world
+    "RMAU.L",   # HanETF Royal Mint Physical Gold ETC      – ESG-screened gold
+    # ── Traditional Half ──────────────────────────────────────────────────
+    "SWDA.L",   # iShares Core MSCI World UCITS ETF        – broad MSCI World
+    "X7G7.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF – duration anchor
+    "XEON.DE",  # Xtrackers II EUR Overnight Rate Swap UCITS – near-cash buffer
+    # ── Thematic Satellite ────────────────────────────────────────────────
+    "SMH",      # VanEck Semiconductor ETF (NASDAQ, USD)   – semiconductor theme
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2010-11-01"   # captures URA from inception; warmup runs 2010–2013
-END_DATE   = "2025-12-31"   # ~15 years total data; ~12 years live-trading
+START_DATE = "2017-01-01"   # pre-dates all UCITS tickers; actual joint start set by latest inception
+END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
 
 # ── Lookback Window (Walk-Forward) ────────────────────────────────────────
 # Years of past daily returns fed into Riskfolio-Lib on each rebalance date.
 # The strategy stays in CASH during this warmup period.
-# 3 years ≈ 756 observations — stable 4×4 correlation matrix.
-LOOKBACK_YEARS: int = 3
+# 1.5 years ≈ 378 observations — sufficient for a stable 7×7 correlation matrix.
+# Reduced from 3 years to preserve live-trading history given the post-2018/2020
+# inception dates of SUSW.L, WEBG.L, and RMAU.L.
+LOOKBACK_YEARS: float = 1.5
 
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
 # How often a new HRP calculation is triggered.
@@ -75,7 +101,7 @@ REBALANCE_FREQ = "quarterly"
 
 # ── Weight Floor (Friction #3) ────────────────────────────────────────────
 # Minimum allocation per asset after HRP optimisation.
-# Prevents volatile assets (e.g. URA) from being reduced to near 0%.
+# Prevents volatile assets (e.g. SMH, WEBG.L) from being reduced to near 0%.
 # Set to 0.0 to disable the floor and allow pure HRP weights.
 MIN_WEIGHT: float = 0.05   # 5 % minimum weight per asset
 
@@ -88,7 +114,7 @@ _COMMISSION_RATE: float = COMMISSION_BPS / 10_000.0   # → 0.0015
 
 # ── Benchmark for Tear Sheet ──────────────────────────────────────────────
 # Set to None (no quotes) to omit the benchmark from the report.
-BENCHMARK_TICKER = "SPY"
+BENCHMARK_TICKER = "SWDA.L"   # iShares Core MSCI World — like-for-like benchmark
 
 # ── Output Directory ──────────────────────────────────────────────────────
 OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
@@ -431,7 +457,7 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ SPY+EEM+URA+GLD │ "
+            "HRP Walk-Forward │ UCITS ESG + Traditional + Thematic │ "
             f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor"
         ),
         match_dates=True,
