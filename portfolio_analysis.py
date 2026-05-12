@@ -3,10 +3,12 @@
 Portfolio Analysis & Backtesting Tool  (Production-Ready Edition)
 ==================================================================
 European UCITS Walk-Forward HRP  —  5+ Year Investment Horizon
-Universe (7 ETFs):
-  ESG Half      — SUSW.L (MSCI World SRI), WEBG.L (World SmallCap ESG), RMAU.L (Gold ETC)
-  Traditional   — SWDA.L (MSCI World), X7G7.DE (EZ Gov Bond 7-10), XEON.DE (EUR O/N Rate)
-  Thematic Sat. — SMH (VanEck Semiconductor, NASDAQ proxy; UCITS: SEMI.L)
+# Universe (6 ETFs) — Medium-Low Risk | 50% ESG Mandate:
+#   ESG            — SUSW (MSCI World SRI), ERNX (EUR Corp Bond ESG), RMAU (Physical Gold ETC)
+#   Traditional    — SWDA (Core MSCI World), X7G7 (EZ Gov Bond 7-10)
+#   Defensive Sat. — IQQH (Global Healthcare)
+# Proxy tickers for deep-history backtest (2018–):
+#   EUNL.DE, IUS3.DE, IEAC.DE, IQQH.DE, DBXN.DE, IGLN.L
 
 Walk-Forward HRP with three real-world market frictions:
   1. Commissions & Slippage  – 15 bps per-trade cost via bt.Backtest
@@ -48,34 +50,37 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# "Deep History" European UCITS Portfolio — 5+ Year Growth Horizon (6 ETFs)
-# Older proxy tickers replace the 2019/2020-inception ETFs so the joint
-# price series extends cleanly back to 2018, covering both the 2020 COVID
-# crash and the 2022 rate-shock bear market in the live walk-forward period.
+# "Deep History" UCITS Proxy Portfolio — Medium-Low Risk | 50% ESG Mandate
 #
-# All tickers are Xetra .DE except IGLN.L (no comparable Xetra gold ETC
-# with equivalent AUM and history; IGLN.L is the deepest-liquidity choice).
+# TARGET portfolio (what the client will actually hold):
+#   SUSW  iShares MSCI World SRI UCITS ETF              – ESG core equity
+#   ERNX  iShares EUR Corp Bond ESG UCITS ETF           – ESG investment-grade credit
+#   RMAU  Royal Mint Physical Gold ETC                  – ESG physical gold
+#   SWDA  iShares Core MSCI World UCITS ETF             – traditional core equity
+#   X7G7  Xtrackers II EZ Gov Bond 7-10 UCITS ETF      – sovereign duration anchor
+#   IQQH  iShares Global Healthcare UCITS ETF           – defensive equity satellite
 #
-#   EUNL.DE  iShares Core MSCI World UCITS ETF            Xetra (EUR)   2005
-#   IUS3.DE  iShares MSCI World SRI UCITS ETF             Xetra (EUR)   2019
-#   IUSN.DE  iShares MSCI World Small Cap UCITS ETF       Xetra (EUR)   2010  (proxy for WEBG)
-#   QDVE.DE  iShares S&P 500 Information Technology UCITS Xetra (EUR)   2018  (proxy for Semiconductors)
-#   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF     Xetra (EUR)   2007
-#   IGLN.L   iShares Physical Gold ETC                    LSE (USD)     2011  (proxy for RMAU)
+# PROXY tickers used here (older series; same underlying risk factors):
+#   EUNL.DE  iShares Core MSCI World UCITS ETF          Xetra (EUR)  2005  ← proxy SWDA
+#   IUS3.DE  iShares MSCI World SRI UCITS ETF           Xetra (EUR)  2018  ← proxy SUSW
+#   EUN5.DE  iShares Core EUR Corporate Bond UCITS ETF   Xetra (EUR)  2010  ← proxy ERNX
+#   IQQH.DE  iShares Global Healthcare UCITS ETF        Xetra (EUR)  2001  ← proxy IQQH (direct)
+#   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF   Xetra (EUR)  2007  ← proxy X7G7
+#   IGLN.L   iShares Physical Gold ETC                 LSE (USD)    2011  ← proxy RMAU
 #
-# Binding data constraint: QDVE.DE (inception 2018) and IUS3.DE (2019).
-# START_DATE = 2018-01-01; warmup year = 2018; live trading from Jan 2019.
+# Binding data constraint: IUS3.DE (Xetra ESG SRI, inception ~mid-2018).
+# START_DATE = 2018-01-01; warmup year ≈ 2018; live trading from mid-2019.
 TICKERS: list[str] = [
-    "EUNL.DE",  # iShares Core MSCI World UCITS ETF             – core global equity anchor
-    "IUS3.DE",  # iShares MSCI World SRI UCITS ETF              – ESG large-cap world
-    "IUSN.DE",  # iShares MSCI World Small Cap UCITS ETF        – small-cap growth proxy
-    "QDVE.DE",  # iShares S&P 500 Info Technology UCITS ETF     – tech/semiconductor proxy
-    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF      – duration / rate hedge
-    "IGLN.L",   # iShares Physical Gold ETC (LSE)               – gold proxy (inception 2011)
+    "EUNL.DE",  # iShares Core MSCI World UCITS ETF             – core global equity (proxy: SWDA)
+    "IUS3.DE",  # iShares MSCI World SRI UCITS ETF              – ESG equity (proxy: SUSW)
+    "EUN5.DE",  # iShares Core EUR Corporate Bond UCITS ETF       – IG credit (proxy: ERNX ESG bonds)
+    "IQQH.DE",  # iShares Global Healthcare UCITS ETF           – defensive satellite (proxy: IQQH)
+    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF      – duration / rate hedge (proxy: X7G7)
+    "IGLN.L",   # iShares Physical Gold ETC (LSE)               – gold hedge (proxy: RMAU)
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2018-01-01"   # all 6 proxy tickers have reliable data from 2018; QDVE.DE oldest binding
+START_DATE = "2018-01-01"   # all 6 proxy tickers have reliable data from 2018; IUS3.DE is binding constraint
 END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
 
 # ── Lookback Window (Walk-Forward) ────────────────────────────────────────
@@ -89,22 +94,27 @@ LOOKBACK_YEARS: float = 1.0
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
 # How often a new HRP calculation is triggered.
 # Options: "monthly" | "quarterly" | "yearly"
-REBALANCE_FREQ = "monthly"   # monthly reactions to volatility spikes in SMH/WEBG
+REBALANCE_FREQ = "monthly"   # monthly reactions to volatility regimes across all 6 assets
 
 # ── Weight Floor (Friction #3) ────────────────────────────────────────────
 # Minimum allocation per asset after HRP optimisation.
-# Prevents volatile assets (e.g. SMH, WEBG.L) from being reduced to near 0%.
+# Lowered from 5% → 3% for the medium-low risk profile: gives HRP more
+# latitude to rotate from equity satellites into fixed income during
+# high-volatility regimes without forcing full permanent equity exposure.
 # Set to 0.0 to disable the floor and allow pure HRP weights.
-MIN_WEIGHT: float = 0.05   # 5 % minimum weight per asset
+MIN_WEIGHT: float = 0.03   # 3% minimum — wider HRP latitude for defensive reallocation
 
 # ── Per-Asset Maximum Weight Caps ──────────────────────────────────────────
-# Caps defensive assets so they cannot crowd out the growth engines.
+# Medium-Low Risk profile: fixed income (DBXN + IEAC) can reach up to 60%
+# combined at peak defensiveness, which is appropriate for this mandate.
+# Equity satellite (IQQH) is capped at 20% to limit sector concentration.
 # Assets not listed here have an implicit 1.0 (100%) upper bound.
-# These bounds are passed to Riskfolio-Lib (w_max) and enforced as a
-# manual safety net after the solver returns, so the loop never crashes.
+# All constraints enforced by the manual 4-step post-optimisation clipper.
 MAX_WEIGHTS: dict[str, float] = {
-    "DBXN.DE": 0.20,   # Eurozone Gov Bonds: cap at 20% (prevents bond-trap)
-    "IGLN.L":  0.15,   # Physical Gold ETC:  cap at 15%
+    "DBXN.DE": 0.35,   # Eurozone Gov Bonds: raised 20%→35% — allow defensive loading in crises
+    "EUN5.DE": 0.25,   # EUR Corp Bond (proxy ERNX ESG): cap at 25% — credit concentration limit
+    "IGLN.L":  0.15,   # Physical Gold ETC (proxy RMAU):  cap at 15% — gold hedge ceiling
+    "IQQH.DE": 0.20,   # Global Healthcare satellite:     cap at 20% — sector concentration limit
 }
 
 # ── Commission + Slippage Model (Friction #1) ─────────────────────────────
@@ -116,7 +126,7 @@ _COMMISSION_RATE: float = COMMISSION_BPS / 10_000.0   # → 0.0015
 
 # ── Benchmark for Tear Sheet ──────────────────────────────────────────────
 # Set to None (no quotes) to omit the benchmark from the report.
-BENCHMARK_TICKER = "EUNL.DE"  # iShares Core MSCI World (Xetra) — like-for-like EUR benchmark
+BENCHMARK_TICKER = "EUNL.DE"  # iShares Core MSCI World (Xetra) — pure-equity benchmark (illustrates vol dampening)
 
 # ── Output Directory ──────────────────────────────────────────────────────
 OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
@@ -523,8 +533,9 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ UCITS Deep-History 6-ETF │ EUNL+IUS3+IUSN+QDVE+DBXN+IGLN │ "
-            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ DBXN≤20% IGLN≤15%"
+            "HRP Walk-Forward │ UCITS Medium-Low Risk 6-ETF │ EUNL+IUS3+EUN5+IQQH+DBXN+IGLN │ "
+            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ "
+            "DBXN≤35% EUN5≤25% IQQH≤20% IGLN≤15%"
         ),
         match_dates=True,
     )
