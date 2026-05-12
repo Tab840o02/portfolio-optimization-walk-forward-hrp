@@ -48,40 +48,42 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# Risk-On European UCITS Portfolio — 5+ Year Growth Horizon (6 ETFs)
-# No cash/XEON: HRP allocates only among risk and growth assets.
+# "Deep History" European UCITS Portfolio — 5+ Year Growth Horizon (6 ETFs)
+# Older proxy tickers replace the 2019/2020-inception ETFs so the joint
+# price series extends cleanly back to 2018, covering both the 2020 COVID
+# crash and the 2022 rate-shock bear market in the live walk-forward period.
 #
-# Verified liquid European tickers (mix of Xetra .DE and LSE .L):
+# All tickers are Xetra .DE except IGLN.L (no comparable Xetra gold ETC
+# with equivalent AUM and history; IGLN.L is the deepest-liquidity choice).
+#
 #   EUNL.DE  iShares Core MSCI World UCITS ETF            Xetra (EUR)   2005
 #   IUS3.DE  iShares MSCI World SRI UCITS ETF             Xetra (EUR)   2019
-#   WEBG.DE  Amundi MSCI World Small Cap ESG Leaders      Xetra (EUR)   2019
-#   VVSM.DE  VanEck Semiconductor UCITS ETF               Xetra (EUR)   2020
+#   IUSN.DE  iShares MSCI World Small Cap UCITS ETF       Xetra (EUR)   2010  (proxy for WEBG)
+#   QDVE.DE  iShares S&P 500 Information Technology UCITS Xetra (EUR)   2018  (proxy for Semiconductors)
 #   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF     Xetra (EUR)   2007
-#   RMAU.L   HanETF Royal Mint Physical Gold ETC          LSE (USD)    ~2019
+#   IGLN.L   iShares Physical Gold ETC                    LSE (USD)     2011  (proxy for RMAU)
 #
-# Binding data constraint: VVSM.DE (inception 2020) and IUS3.DE (2019).
-# START_DATE = 2021-01-01 guarantees all 6 tickers have reliable volume.
-# WEBG.DE replaces WEBG.L: same fund, Xetra listing shares German holidays
-# with EUNL/IUS3/VVSM/DBXN, eliminating UK-holiday NaN mismatches.
+# Binding data constraint: QDVE.DE (inception 2018) and IUS3.DE (2019).
+# START_DATE = 2018-01-01; warmup year = 2018; live trading from Jan 2019.
 TICKERS: list[str] = [
-    "EUNL.DE",  # iShares Core MSCI World UCITS ETF        – core global equity anchor
-    "IUS3.DE",  # iShares MSCI World SRI UCITS ETF         – ESG large-cap world
-    "WEBG.DE",  # Amundi MSCI World Small Cap ESG Leaders  – ESG small-cap growth (Xetra)
-    "VVSM.DE",  # VanEck Semiconductor UCITS ETF           – thematic AI/chip satellite
-    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF – duration / rate hedge
-    "RMAU.L",   # HanETF Royal Mint Physical Gold ETC      – ESG-screened gold
+    "EUNL.DE",  # iShares Core MSCI World UCITS ETF             – core global equity anchor
+    "IUS3.DE",  # iShares MSCI World SRI UCITS ETF              – ESG large-cap world
+    "IUSN.DE",  # iShares MSCI World Small Cap UCITS ETF        – small-cap growth proxy
+    "QDVE.DE",  # iShares S&P 500 Info Technology UCITS ETF     – tech/semiconductor proxy
+    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF      – duration / rate hedge
+    "IGLN.L",   # iShares Physical Gold ETC (LSE)               – gold proxy (inception 2011)
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2021-01-01"   # VVSM.DE and IUS3.DE have reliable volume from 2021; all 6 clean from here
+START_DATE = "2018-01-01"   # all 6 proxy tickers have reliable data from 2018; QDVE.DE oldest binding
 END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
 
 # ── Lookback Window (Walk-Forward) ────────────────────────────────────────
 # Years of past daily returns fed into Riskfolio-Lib on each rebalance date.
 # The strategy stays in CASH during this warmup period.
-# 1 year ≈ 252 observations — sufficient for a stable 5×5 correlation matrix.
-# With data only from 2020, a 1-year lookback maximises live-trading history
-# (first rebalance fires Jan 2021, giving ~5 years of out-of-sample simulation).
+# 1 year ≈ 252 observations — sufficient for a stable 6×6 correlation matrix.
+# Warmup: Jan 2018 – Dec 2018. Live walk-forward: Jan 2019 – present.
+# Covers COVID crash (Feb–Mar 2020) and 2022 rate-shock bear in live period.
 LOOKBACK_YEARS: float = 1.0
 
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
@@ -102,7 +104,7 @@ MIN_WEIGHT: float = 0.05   # 5 % minimum weight per asset
 # manual safety net after the solver returns, so the loop never crashes.
 MAX_WEIGHTS: dict[str, float] = {
     "DBXN.DE": 0.20,   # Eurozone Gov Bonds: cap at 20% (prevents bond-trap)
-    "RMAU.L":  0.15,   # Physical Gold ETC:  cap at 15%
+    "IGLN.L":  0.15,   # Physical Gold ETC:  cap at 15%
 }
 
 # ── Commission + Slippage Model (Friction #1) ─────────────────────────────
@@ -485,8 +487,8 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ UCITS 6-ETF Growth │ EUNL+IUS3+WEBG+VVSM+DBXN+RMAU │ "
-            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ DBXN≤20% RMAU≤15%"
+            "HRP Walk-Forward │ UCITS Deep-History 6-ETF │ EUNL+IUS3+IUSN+QDVE+DBXN+IGLN │ "
+            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ DBXN≤20% IGLN≤15%"
         ),
         match_dates=True,
     )
