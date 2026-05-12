@@ -3,18 +3,18 @@
 Portfolio Analysis & Backtesting Tool  (Production-Ready Edition)
 ==================================================================
 European UCITS Walk-Forward HRP  —  5+ Year Investment Horizon
-# Universe (6 ETFs) — Balanced Medium Risk | Quality-Factor Tilt:
-#   Quality-Factor — iShares MSCI World Quality (IS3Q)
-#   ESG            — SUSW (MSCI World SRI), RMAU (Physical Gold ETC)
-#   Traditional    — SWDA (Core MSCI World), ERNX (EUR Corp Bond)
-#   Defensive Sat. — IQQH (Global Healthcare)
-# Proxy tickers for deep-history backtest (2018–):
-#   EUNL.DE, IS3Q.DE, IUS3.DE, IQQH.DE, EUN5.DE, IGLN.L
+# Universe (4 ETFs) — ESG-Pure Balanced | SUSW + SUSM + SUOE + VAGF:
+#   Developed-Mkt Equity  — SUSW.L  iShares MSCI World SRI
+#   Emerging-Mkt Equity   — SUSM.L  iShares MSCI EM SRI
+#   EUR IG Credit ESG     — SUOE.L  iShares € Corp Bond ESG SRI
+#   Global Agg Bond Hdg   — VAGF.DE Vanguard Global Aggregate Bond EUR Hedged
+# All four are direct client-target holdings — no proxies needed.
+# Binding data constraint: VAGF.DE (Xetra inception 2019-06-18).
 
 Walk-Forward HRP with three real-world market frictions:
   1. Commissions & Slippage  – 15 bps per-trade cost via bt.Backtest
   2. T+1 Execution Delay     – weights computed on Day T, traded on Day T+1
-  3. Weight Floor            – MIN_WEIGHT = 5% prevents any asset being zeroed
+  3. Weight Floor            – MIN_WEIGHT = 10% minimum per asset (4 × 10% = 40% committed)
 
 Pipeline (zero lookahead bias preserved throughout):
   Step 1: Data Ingestion       – yfinance (adjusted-close prices)
@@ -51,52 +51,46 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# "Deep History" UCITS Proxy Portfolio — Balanced Medium Risk | Quality-Factor Tilt
+# 100% ESG UCITS Portfolio — 4 direct client-target holdings (NO proxies)
 #
-# TARGET portfolio (what the client will actually hold):
-#   SWDA  iShares Core MSCI World UCITS ETF             – traditional core equity
-#   IS3Q  iShares Edge MSCI World Quality Factor ETF   – quality-factor equity (Sharpe lever)
-#   SUSW  iShares MSCI World SRI UCITS ETF              – ESG equity anchor
-#   IQQH  iShares Global Healthcare UCITS ETF           – defensive equity satellite
-#   ERNX  iShares EUR Corp Bond ESG UCITS ETF           – modest IG credit yield buffer
-#   RMAU  Royal Mint Physical Gold ETC                  – tail-risk hedge / inflation store
+# CLIENT HOLDINGS (exact tickers — traded directly):
+#   SUSW.L   iShares MSCI World SRI UCITS ETF EUR (Acc)         LSE (EUR)  Oct 2017
+#            → Developed-market ESG equity core. Screens MSCI World on ESG
+#              criteria; removes ESG laggards. ~1,500 holdings, EUR-denominated.
+#   SUSM.L   iShares MSCI EM SRI UCITS ETF USD (Acc)           LSE (USD)  Jul 2016
+#            → Emerging-market ESG equity satellite. Higher growth potential
+#              than DM; higher vol — capped at 20% to manage concentration risk.
+#   SUOE.L   iShares € Corp Bond ESG SRI UCITS ETF EUR (Dist)  LSE (EUR)  Jun 2018
+#            → EUR investment-grade credit with strict ESG/SRI overlay.
+#              Provides carry and acts as equity offset in moderate sell-offs.
+#   VAGF.DE  Vanguard Global Aggregate Bond UCITS ETF EUR Hdg  Xetra (EUR) Jun 2019
+#            → Broad global fixed-income (govts + IG corps, 30+ countries),
+#              currency-hedged to EUR. Lowest-volatility asset; anchor in
+#              HRP's minimum-variance clustering.
 #
-# PROXY tickers used here (older series; same underlying risk factors):
-#   EUNL.DE  iShares Core MSCI World UCITS ETF          Xetra (EUR)  2005  ← proxy SWDA
-#   IS3Q.DE  iShares Edge MSCI World Quality Factor     Xetra (EUR)  2018  ← direct listing
-#   IUS3.DE  iShares MSCI World SRI UCITS ETF           Xetra (EUR)  2018  ← proxy SUSW
-#   IQQH.DE  iShares Global Healthcare UCITS ETF        Xetra (EUR)  2001  ← proxy IQQH (direct)
-#   EUN5.DE  iShares Core EUR Corporate Bond UCITS ETF  Xetra (EUR)  2010  ← proxy ERNX
-#   IGLN.L   iShares Physical Gold ETC                 LSE (USD)    2011  ← proxy RMAU
-#
-# WHY remove DBXN.DE (EZ Gov Bond 7-10Y):
-#   Long-duration gov bonds hurt in 2022 rate-shock (-20% price) AND provide
-#   insufficient offset in fast equity crashes (2020 COVID). Net effect: drag
-#   on CAGR without meaningful drawdown protection. Replaced by IS3Q quality
-#   factor which is "defensive equity" — lower vol than market-cap, better
-#   Sharpe, without duration risk.
-#
-# Binding data constraint: IUS3.DE / IS3Q.DE (both Xetra, inception 2018-01-02).
-# START_DATE = 2018-01-01; warmup year ≈ 2018; live trading from mid-2019.
+# BINDING DATA CONSTRAINT: VAGF.DE inception 2019-06-18.
+#   START_DATE = 2019-01-01; data available from June 2019 after joint dropna.
+#   Warmup (1 yr lookback): Jun 2019 – Jun 2020.
+#   First live semi-annual rebalance: July 2020.
+#   Live backtest covers: 2020 COVID recovery, 2021 bull, 2022 rate-shock, 2023–2026.
 TICKERS: list[str] = [
-    "EUNL.DE",  # iShares Core MSCI World UCITS ETF             – core global equity (proxy: SWDA)
-    "IS3Q.DE",  # iShares Edge MSCI World Quality Factor ETF   – quality-factor equity (Sharpe lever)
-    "IUS3.DE",  # iShares MSCI World SRI UCITS ETF              – ESG equity (proxy: SUSW)
-    "IQQH.DE",  # iShares Global Healthcare UCITS ETF           – defensive satellite (proxy: IQQH)
-    "EUN5.DE",  # iShares Core EUR Corporate Bond UCITS ETF     – modest IG credit yield buffer
-    "IGLN.L",   # iShares Physical Gold ETC (LSE)               – tail-risk hedge (proxy: RMAU)
+    "SUSW.L",   # iShares MSCI World SRI UCITS ETF EUR (Acc)         – DM ESG equity core
+    "SUSM.L",   # iShares MSCI EM SRI UCITS ETF USD (Acc)            – EM ESG equity satellite
+    "SUOE.L",   # iShares € Corp Bond ESG SRI UCITS ETF EUR (Dist)   – EUR IG credit ESG
+    "VAGF.DE",  # Vanguard Global Aggregate Bond UCITS ETF EUR Hdg   – global agg anchor
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2018-01-01"   # all 6 proxy tickers have reliable data from 2018; IUS3.DE is binding constraint
+START_DATE = "2019-01-01"   # VAGF.DE (Vanguard Global Agg) is binding constraint — Xetra inception Jun 2019
 END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
 
 # ── Lookback Window (Walk-Forward) ────────────────────────────────────────
 # Years of past daily returns fed into Riskfolio-Lib on each rebalance date.
 # The strategy stays in CASH during this warmup period.
-# 1 year ≈ 252 observations — sufficient for a stable 6×6 correlation matrix.
-# Warmup: Jan 2018 – Dec 2018. Live walk-forward: Jan 2019 – present.
-# Covers COVID crash (Feb–Mar 2020) and 2022 rate-shock bear in live period.
+# 1 year ≈ 252 observations — sufficient for a stable 4×4 correlation matrix.
+# Data starts Jun 2019 (VAGF.DE inception). With 1-yr lookback, warmup ends
+# Jun 2020. First live rebalance: Jul 2020 (semi-annual trigger).
+# Live period covers: 2020 COVID recovery, 2021 bull, 2022 rate-shock, 2023–2026.
 LOOKBACK_YEARS: float = 1.0
 
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
@@ -106,25 +100,28 @@ REBALANCE_FREQ = "semi-annual"   # semi-annual; matches client's real-world reba
 
 # ── Weight Floor (Friction #3) ────────────────────────────────────────────
 # Minimum allocation per asset after HRP optimisation.
-# Raised back to 5% for the balanced profile: 6 tickers × 5% floor = 30% committed,
-# leaving 70% for HRP's free allocation. Ensures every position is meaningful
-# and semi-annual rebalancing doesn't let any asset drift to near zero.
+# 10% floor mandated by client: 4 assets × 10% = 40% committed minimum.
+# Remaining 60% allocated freely by HRP's minimum-variance clustering.
+# This is a strong constraint that prevents any asset from being crowded out,
+# appropriate given the small 4-asset universe and semi-annual rebalancing.
 # Set to 0.0 to disable the floor and allow pure HRP weights.
-MIN_WEIGHT: float = 0.05   # 5% minimum — meaningful positions across all 6 assets
+MIN_WEIGHT: float = 0.10   # 10% minimum — client mandate; ensures all 4 assets always held
 
 # ── Per-Asset Maximum Weight Caps ──────────────────────────────────────────
-# Balanced profile: ~70-75% equity, ~18% bonds max, ~12% gold max.
-# EUNL.DE capped to prevent plain market-cap dominating when quality (IS3Q) is also present.
-# IS3Q.DE intentionally uncapped: HRP allocates it where variance budget allows — optimal.
-# EUN5.DE limited to 18%: enough yield buffer without dragging CAGR toward bond-like returns.
-# Assets not listed here (IS3Q.DE) have an implicit 1.0 (100%) upper bound.
+# Max caps rationale for 4-asset ESG-pure universe:
+#   SUSW.L  50% — primary equity engine; allow HRP to lean in on low-vol regime
+#   SUSM.L  20% — EM is ~40% more volatile than DM; satellite only; single-region risk
+#   SUOE.L  25% — EUR IG credit: capped at 25% to prevent bond-heavy crowding.
+#               Combined with VAGF cap (25%) sets hard 50% max in total fixed income,
+#               ensuring minimum ~50% goes to equity (SUSW + SUSM post-redistribution).
+#   VAGF.DE 25% — global agg: same reasoning. Combined bond cap = 50% max.
+# With 10% floor each = 40% committed; bond caps ensure 40%+ goes to equity.
 # All constraints enforced by the manual 4-step post-optimisation clipper.
 MAX_WEIGHTS: dict[str, float] = {
-    "EUNL.DE": 0.35,   # Core MSCI World:   cap 35% — prevents plain market-cap dominance
-    "IUS3.DE": 0.25,   # ESG SRI equity:    cap 25% — ESG anchor, avoids double-count with EUNL
-    "EUN5.DE": 0.18,   # EUR Corp Bond:     cap 18% — modest yield buffer; not a core holding
-    "IQQH.DE": 0.20,   # Global Healthcare: cap 20% — sector concentration limit
-    "IGLN.L":  0.12,   # Physical Gold:     cap 12% — tail-risk hedge ceiling
+    "SUSW.L":  0.50,   # DM ESG equity core:  cap 50% — primary return driver
+    "SUSM.L":  0.20,   # EM ESG satellite:    cap 20% — higher vol; concentration limit
+    "SUOE.L":  0.25,   # EUR IG credit ESG:   cap 25% — prevents bond-crowding; max 50% combined bonds
+    "VAGF.DE": 0.25,   # Global agg bond:     cap 25% — prevents bond-crowding; max 50% combined bonds
 }
 
 # ── Commission + Slippage Model (Friction #1) ─────────────────────────────
@@ -136,7 +133,7 @@ _COMMISSION_RATE: float = COMMISSION_BPS / 10_000.0   # → 0.0015
 
 # ── Benchmark for Tear Sheet ──────────────────────────────────────────────
 # Set to None (no quotes) to omit the benchmark from the report.
-BENCHMARK_TICKER = "EUNL.DE"  # iShares Core MSCI World (Xetra) — pure-equity benchmark (illustrates vol dampening)
+BENCHMARK_TICKER = "SUSW.L"   # iShares MSCI World SRI (LSE) — primary equity component; natural benchmark
 
 # ── Output Directory ──────────────────────────────────────────────────────
 OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
@@ -546,9 +543,9 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            "HRP Walk-Forward │ UCITS Balanced 6-ETF │ EUNL+IS3Q+IUS3+IQQH+EUN5+IGLN │ "
+            "HRP Walk-Forward │ ESG-Pure 4-ETF │ SUSW+SUSM+SUOE+VAGF │ "
             f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ {MIN_WEIGHT:.0%} Floor │ "
-            "EUNL≤35% IUS3≤25% EUN5≤18% IQQH≤20% IGLN≤12% │ Semi-Annual Rebal"
+            "SUSW≤50% SUSM≤20% SUOE≤25% VAGF≤25% │ Semi-Annual Rebal"
         ),
         match_dates=True,
     )
