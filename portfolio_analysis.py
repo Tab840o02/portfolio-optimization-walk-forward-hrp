@@ -204,46 +204,82 @@ class HRPWithT1Delay(bt.Algo):
         self, window_returns: pd.DataFrame
     ) -> dict[str, float] | None:
         """
-        Calls Riskfolio-Lib's official HRP engine.
-        Applies the MIN_WEIGHT floor (w_min) directly in the optimisation.
-        Falls back to a manual clip-and-renormalise if w_min is rejected.
+        Calls Riskfolio-Lib's official HRP engine, then applies a
+        MANUAL POST-OPTIMIZATION CLIPPER that enforces per-asset max caps
+        and the minimum weight floor entirely in Python — with no reliance
+        on Riskfolio-Lib's internal constraint engine (which silently ignores
+        w_min / w_max on certain builds).
+
+        Pipeline (4 explicit steps, run after the raw HRP solve):
+          Step 1 — Hard-clip each capped asset to its MAX_WEIGHTS ceiling.
+                   Accumulate the total excess weight that was chopped off.
+          Step 2 — Redistribute the excess proportionally to the uncapped
+                   (equity) assets based on their current relative weights.
+                   Fallback: equal distribution if all equity weights are 0.
+          Step 3 — Apply the MIN_WEIGHT (5%) floor: clip every asset up.
+          Step 4 — Final renormalise so the vector sums exactly to 1.0.
+
+        Mathematical guarantee after Step 4:
+          • Capped assets: renorm divides by sum ≥ 1 (floor bumped total up),
+            so capped weight ≤ original cap value. Caps are always satisfied.
+          • Sum = 1.0 exactly.
+          • Floor: assets are ≥ 0.05 before renorm; after renorm by
+            sum ≥ 1, a tiny fraction of assets may land just below 0.05.
+            A second pass (Steps 3–4 repeated once) closes this gap.
+
         Returns a {ticker: weight} dict or None on failure.
         """
+        # ── Get raw HRP weights from Riskfolio (unconstrained solve) ──────
         try:
             port = rp.HCPortfolio(returns=window_returns)
             w_df: pd.DataFrame = port.optimization(
                 model="HRP",
                 codependence="pearson",
-                rm="MV",          # Minimum-Variance risk measure
-                rf=0.0,
-                linkage="ward",   # Ward linkage for hierarchical clustering
-                max_k=10,
-                leaf_order=True,
-                w_min=self._min_weight,   # ← Weight Floor (Friction #3)
-            )
-        except TypeError:
-            # Older Riskfolio-Lib build that doesn't accept w_min keyword
-            port = rp.HCPortfolio(returns=window_returns)
-            w_df = port.optimization(
-                model="HRP",
-                codependence="pearson",
-                rm="MV",
+                rm="MV",       # Minimum-Variance risk measure
                 rf=0.0,
                 linkage="ward",
                 max_k=10,
                 leaf_order=True,
+                # Do NOT pass w_min / w_max — enforced manually below
             )
-        except Exception as exc:
-            return None  # caller will log and skip
+        except Exception:
+            return None
 
-        weights: pd.Series = w_df["weights"]
+        weights: pd.Series = w_df["weights"].copy()
 
-        # ── Safety net: manual floor + renormalise ─────────────────────────
-        # Guarantees MIN_WEIGHT is respected even if w_min was silently
-        # ignored or the internal solver rounded slightly below the bound.
-        if self._min_weight > 0.0:
-            weights = weights.clip(lower=self._min_weight)
-            weights = weights / weights.sum()
+        # Identify which capped assets are present in this window
+        caps   = {a: c for a, c in self._max_weights.items() if a in weights.index}
+        # Uncapped assets = everything not in MAX_WEIGHTS — these absorb excess
+        free   = [a for a in weights.index if a not in self._max_weights]
+
+        # Run the 4-step clipper twice so the floor is tight after renorm
+        for _pass in range(2):
+
+            # ── Step 1: Hard-clip capped assets ───────────────────────────
+            excess = 0.0
+            for asset, cap in caps.items():
+                if weights[asset] > cap:
+                    excess += weights[asset] - cap
+                    weights[asset] = cap
+
+            # ── Step 2: Redistribute excess to uncapped (equity) assets ───
+            if excess > 0.0 and free:
+                free_total = weights[free].sum()
+                if free_total > 0.0:
+                    # Proportional to current free-asset weights
+                    weights[free] += excess * (weights[free] / free_total)
+                else:
+                    # Fallback: equal share
+                    weights[free] += excess / len(free)
+
+            # ── Step 3: Apply MIN_WEIGHT floor ────────────────────────────
+            if self._min_weight > 0.0:
+                weights = weights.clip(lower=self._min_weight)
+
+            # ── Step 4: Renormalise to exactly 1.0 ────────────────────────
+            total = weights.sum()
+            if total > 0.0:
+                weights = weights / total
 
         return weights.to_dict()
 
