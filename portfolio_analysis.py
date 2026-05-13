@@ -50,134 +50,165 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ║          ← All user-facing settings live here; edit freely →            ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-# ── Investment Universe ────────────────────────────────────────────────────
-# Balanced 6-ETF Multi-Factor Portfolio
-# Two equity buckets (core + quality), two bond buckets (short + long), gold, small cap.
-#
-# HOLDINGS:
-#   EUNL.DE  iShares Core MSCI World UCITS ETF (Acc)     Xetra (EUR) 2005  ← broad DM equity core
-#   IS3Q.DE  iShares MSCI World Quality Factor UCITS ETF Xetra (EUR) 2014  ← quality/profitability tilt
-#   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF    Xetra (EUR) 2007  ← duration anchor
-#   IBCI.DE  iShares EUR Corp Bond 1-5yr UCITS ETF       Xetra (EUR) 2012  ← short-med bond; capital preservation
-#   SGLD.L   Invesco Physical Gold ETC                   LSE   (USD) 2009  ← inflation hedge / tail risk
-#   WDSC.L   SPDR MSCI World Small Cap UCITS ETF         LSE   (USD) 2018  ← small cap premium
-#
-# DATA COVERAGE:
-#   Binding constraint: WDSC.L — first data 2018-01-02.
-#   All other tickers: data from 2005-2014.
-#   START_DATE 2018-01-01; fixed_weight mode = no warmup; full 8+ year backtest.
-#   Live period 2018-2026 covers: 2018 selloff, 2020 COVID, 2022 rate shock, 2023-26 recovery.
-#   ~2,100 daily observations — statistically robust (8+ full calendar years).
-TICKERS: list[str] = [
-    "EUNL.DE",  # iShares Core MSCI World UCITS ETF (Acc)       – broad DM equity core
-    "IS3Q.DE",  # iShares MSCI World Quality Factor UCITS ETF   – quality / profitability tilt
-    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF (Acc) – sovereign duration anchor
-    "IBCI.DE",  # iShares EUR Corp Bond 1-5yr UCITS ETF         – short-med bond; capital preservation
-    "SGLD.L",   # Invesco Physical Gold ETC                     – inflation hedge / tail risk
-    "WDSC.L",   # SPDR MSCI World Small Cap UCITS ETF           – small cap premium
-]
+# ── Global Backtest Settings ───────────────────────────────────────────────
+# Binding constraint: WDSC.L first data 2018-01-02 → START_DATE 2018-01-01.
+# fixed_weight mode has no warmup → all 8.4 years are live-traded.
+# Period covers 4 distinct market regimes for statistical robustness:
+#   2018 Q4 selloff | 2020 COVID crash+recovery | 2022 rate shock | 2023-26 recovery.
+START_DATE = "2018-01-01"
+END_DATE   = "2026-12-31"   # ceiling; yfinance returns up to today
 
-# ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2018-01-01"   # WDSC.L (binding constraint) starts 2018-01-02; full 8+ year backtest
-END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
-
-# ── Lookback Window (Walk-Forward) ────────────────────────────────────────
-# Years of past daily returns fed into Riskfolio-Lib on each rebalance date.
-# Only used when STRATEGY_MODE = "hrp". For "fixed_weight", no lookback is needed.
-# 1 year ≈ 252 observations — sufficient for a stable 6×6 correlation matrix.
-LOOKBACK_YEARS: float = 1.0
+# ── Walk-Forward Lookback (HRP mode only) ────────────────────────────────
+LOOKBACK_YEARS: float = 1.0   # 1yr ≈ 252 obs; sufficient for a stable 6×6 corr matrix
 
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
 # Options: "monthly" | "quarterly" | "semi-annual" | "yearly"
-REBALANCE_FREQ = "yearly"   # annual rebalance; low turnover, tax-efficient
+REBALANCE_FREQ = "yearly"   # Annual rebalance; ~6 trades/yr; low turnover, tax-efficient
 
-# ── Weight Floor & Caps (used when STRATEGY_MODE = "hrp") ────────────────
-# Not applied in fixed_weight mode — target allocations ARE the constraints.
-#
-# Sensible HRP caps for this 6-ETF portfolio (if switching to HRP mode):
-#   EUNL.DE / IS3Q.DE: 35% each — equity; allow HRP to tilt but cap concentration
-#   DBXN.DE / IBCI.DE: 30% each — bonds; combined 60% max duration exposure
-#   SGLD.L  / WDSC.L:  25% each — satellite assets; higher vol, keep as diversifiers
-MIN_WEIGHT: float = 0.08   # 8% floor in HRP mode: 6 assets × 8% = 48% committed
-MAX_WEIGHTS: dict[str, float] = {
-    "EUNL.DE": 0.35,   # Core DM equity
-    "IS3Q.DE": 0.35,   # Quality factor
-    "DBXN.DE": 0.30,   # Long duration bonds
-    "IBCI.DE": 0.30,   # Short-medium bonds
-    "SGLD.L":  0.25,   # Gold satellite
-    "WDSC.L":  0.25,   # Small cap satellite
-}
-
-# ── Strategy Mode ────────────────────────────────────────────────────────
-# "fixed_weight"  — Rebalance to exact TARGET_WEIGHTS on schedule. No optimisation.
-#                   Best for validating a specific proposed allocation.
-# "equal_weight"  — Fixed 1/N equal weights, rebalanced on schedule.
-# "hrp"           — Walk-forward HRP with MIN_WEIGHT floor and MAX_WEIGHTS caps.
-#                   Adapts dynamically to changing vol/correlation regimes.
-#
-# For this 6-ETF proposal, use "fixed_weight" to test the exact allocation.
-STRATEGY_MODE: str = "fixed_weight"   # "fixed_weight" | "equal_weight" | "hrp"
-
-# ── Target Weights (used when STRATEGY_MODE = "fixed_weight") ─────────────
-# Must sum to 1.0. Renormalised automatically at runtime.
-#
-# Design rationale:
-#   40% equity  : EUNL 20% (broad DM) + IS3Q 20% (quality tilt)
-#                 Quality factor historically adds ~1-2% CAGR vs market-cap weight
-#                 with lower drawdowns (lower financial leverage, stable earnings).
-#   30% bonds   : DBXN 15% (7-10yr duration) + IBCI 15% (1-5yr corp)
-#                 Duration ladder: long bonds hedge equity selloffs; short bonds
-#                 provide yield pickup vs cash with low interest-rate risk.
-#   15% gold    : SGLD — negative / zero equity correlation in crises;
-#                 preserves real value; completes the inflation-hedge role.
-#   15% small cap: WDSC — small cap premium (Fama-French SMB); higher long-run
-#                 expected return vs large cap; diversifies away from mega-cap growth.
-TARGET_WEIGHTS: dict[str, float] = {
-    "EUNL.DE": 0.20,   # Broad DM equity core
-    "IS3Q.DE": 0.20,   # Quality factor tilt
-    "DBXN.DE": 0.15,   # Long-duration EZ sovereign
-    "IBCI.DE": 0.15,   # Short-medium EUR corp bond
-    "SGLD.L":  0.15,   # Gold
-    "WDSC.L":  0.15,   # Small cap premium
-}
-
-# ── Commission + Slippage Model (Friction #1) ─────────────────────────────
-# Combined estimate: broker commission + bid/ask half-spread.
-# 15 bps (0.15%) is a conservative but realistic figure for ETF trades.
-# Applied on EVERY rebalance trade by bt via the commissions callback.
-COMMISSION_BPS: float = 15.0   # basis points; converted to decimal below
+# ── Commission + Slippage Model ───────────────────────────────────────────
+# 15 bps per trade: conservative estimate covering broker commission + bid/ask spread.
+# Applied symmetrically to buys and sells via bt.Backtest commissions callback.
+COMMISSION_BPS: float = 15.0
 _COMMISSION_RATE: float = COMMISSION_BPS / 10_000.0   # → 0.0015
 
-# ── Benchmark for Tear Sheet ──────────────────────────────────────────────
-# Set to None (no quotes) to omit the benchmark from the report.
-BENCHMARK_TICKER = "EUNL.DE"  # iShares Core MSCI World (Xetra) — illustrates how multi-asset smooths pure equity
+# ── Benchmark ─────────────────────────────────────────────────────────────
+# EUNL.DE = pure DM equity; shows the diversification benefit of multi-asset.
+# Set to None to omit benchmark from tearsheet.
+BENCHMARK_TICKER = "EUNL.DE"
 
 # ── Output Directory ──────────────────────────────────────────────────────
 OUTPUT_DIR = Path(r"C:\Users\tobia\OneDrive\Documenti\Investimenti")
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║          HRPWithT1Delay  —  Production bt.Algo                          ║
+# ║                    STRATEGIES UNDER COMPARISON                           ║
 # ║                                                                          ║
-# ║  Design rationale for the combined algo                                  ║
-# ║  ─────────────────────────────────────                                   ║
-# ║  bt's chain aborts as soon as any algo returns False.  If we used a      ║
-# ║  standard Run* → CalculateHRP → Rebalance chain, making                  ║
-# ║  CalculateHRP return False (to block same-day execution) would also       ║
-# ║  block the T+1 ExecutePending algo if it came after in the chain.         ║
+# ║  Two portfolios run in a SINGLE backtest pass for direct comparison:     ║
 # ║                                                                          ║
-# ║  The solution: one combined algo that runs on EVERY bar and manages       ║
-# ║  its own state machine:                                                   ║
-# ║    • Phase A (scheduling): fires on the first bar of each new             ║
-# ║      month / quarter / year (configurable).                               ║
-# ║    • On the trigger bar (Day T): compute HRP → store weights as           ║
-# ║      pending → return False  (no trade today).                            ║
-# ║    • On the very next bar (Day T+1): pop pending weights → set            ║
-# ║      target.temp['weights'] → return True  (Rebalance() executes).        ║
+# ║  1. Recommended_6ETF  ← PRIMARY (full tearsheet generated)              ║
+# ║     Final recommendation from analysis report.                           ║
+# ║     Replaces 20% cash (XEON.DE) with quality equity (IS3Q.DE) and       ║
+# ║     splits bonds into a duration ladder (7-10yr + 1-5yr).               ║
+# ║     40% equity / 30% bonds / 15% gold / 15% small cap                   ║
+# ║     CAGR 8.87% | Vol 9.61% | Sharpe 0.93 | MaxDD -21.81%               ║
 # ║                                                                          ║
-# ║  Zero-lookahead-bias guarantee:                                           ║
-# ║    prices are sliced with index < target.now so the current day's         ║
-# ║    close is never included in the optimisation window.                    ║
+# ║  2. Caveat_GB_IBCI  ← REFERENCE (capital-preservation variant)          ║
+# ║     For investors with higher loss-aversion or shorter horizon.          ║
+# ║     Classic Golden Butterfly structure (5×20%) with IBCI replacing      ║
+# ║     XEON.DE: same defensive profile but better forward yield.            ║
+# ║     Expected: lower CAGR vs Recommended, shallower drawdown.            ║
+# ║                                                                          ║
+# ║  Both share: START_DATE, REBALANCE_FREQ, COMMISSION_BPS, LOOKBACK_YEARS ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+STRATEGIES: dict[str, dict] = {
+
+    # ── Strategy 1: Final Recommendation ──────────────────────────────────
+    "Recommended_6ETF": {
+        # Human-readable label used in printed reports and tearsheet title
+        "label": "Balanced 6-ETF Multi-Factor (Recommended)",
+
+        # Tickers in this strategy's universe
+        "tickers": [
+            "EUNL.DE",  # iShares Core MSCI World UCITS ETF (Acc)      – broad DM equity core
+            "IS3Q.DE",  # iShares MSCI World Quality Factor UCITS ETF  – quality / profitability tilt
+            "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10yr UCITS ETF    – duration anchor
+            "IBCI.DE",  # iShares EUR Corp Bond 1-5yr UCITS ETF        – short-med bond; yield pickup
+            "SGLD.L",   # Invesco Physical Gold ETC                    – inflation hedge / tail risk
+            "WDSC.L",   # SPDR MSCI World Small Cap UCITS ETF          – small cap premium (SMB)
+        ],
+
+        # fixed_weight: rebalance to exact target on schedule; no optimisation.
+        # Correct mode for proposal validation — tests exact allocation as-specified.
+        "mode": "fixed_weight",
+
+        # Target allocation — must sum to 1.0.
+        # Rationale:
+        #   40% equity  : EUNL (broad DM) + IS3Q (quality tilt).
+        #                 Quality selects high-ROE, low-leverage companies: historically
+        #                 +1-2% CAGR vs market-cap with lower drawdowns.
+        #   30% bonds   : DBXN (7-10yr) + IBCI (1-5yr). Duration ladder:
+        #                 long end hedges equity selloffs; short end provides yield
+        #                 pickup vs cash with low interest-rate sensitivity.
+        #   15% gold    : SGLD. Near-zero / negative equity correlation in crises.
+        #                 Real store of value; inflation hedge.
+        #   15% sc      : WDSC. Fama-French SMB premium; higher long-run expected
+        #                 return vs large cap; diversifies mega-cap growth concentration.
+        "target_weights": {
+            "EUNL.DE": 0.20,   # Broad DM equity core
+            "IS3Q.DE": 0.20,   # Quality factor tilt
+            "DBXN.DE": 0.15,   # Long-duration EZ sovereign
+            "IBCI.DE": 0.15,   # Short-medium EUR corporate bond
+            "SGLD.L":  0.15,   # Physical gold
+            "WDSC.L":  0.15,   # Small cap premium
+        },
+
+        # HRP-mode constraints (active only when mode = "hrp")
+        "min_weight":  0.08,
+        "max_weights": {
+            "EUNL.DE": 0.35,
+            "IS3Q.DE": 0.35,
+            "DBXN.DE": 0.30,
+            "IBCI.DE": 0.30,
+            "SGLD.L":  0.25,
+            "WDSC.L":  0.25,
+        },
+
+        # Generate the full QuantStats HTML tearsheet for this strategy
+        "primary": True,
+    },
+
+    # ── Strategy 2: Capital-Preservation Variant (Caveat) ─────────────────
+    "Caveat_GB_IBCI": {
+        "label": "Golden Butterfly + IBCI (Capital-Preservation Variant)",
+
+        "tickers": [
+            "EUNL.DE",  # iShares Core MSCI World UCITS ETF (Acc)     – DM equity bucket
+            "WDSC.L",   # SPDR MSCI World Small Cap UCITS ETF         – small cap bucket
+            "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10yr UCITS ETF   – long bond bucket
+            "IBCI.DE",  # iShares EUR Corp Bond 1-5yr UCITS ETF       – replaces XEON.DE cash bucket
+            "SGLD.L",   # Invesco Physical Gold ETC                   – gold bucket
+        ],
+
+        "mode": "fixed_weight",
+
+        # Classic Golden Butterfly: equal 20% per bucket.
+        # Cash bucket (XEON.DE) replaced by IBCI.DE:
+        #   XEON yields ~2.3% (ECB overnight, declining).
+        #   IBCI yields ~3-4% (1-5yr EUR corp bonds) with only 6% vol.
+        #   Same defensive profile; meaningfully better forward return.
+        "target_weights": {
+            "EUNL.DE": 0.20,
+            "WDSC.L":  0.20,
+            "DBXN.DE": 0.20,
+            "IBCI.DE": 0.20,   # XEON.DE upgrade
+            "SGLD.L":  0.20,
+        },
+
+        "min_weight":  0.08,
+        "max_weights": {},   # No caps needed for equal-weight fixed structure
+
+        # Comparison reference only; no separate tearsheet
+        "primary": False,
+    },
+}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║          WeightAlgoWithT1Delay  —  Production bt.Algo                   ║
+# ║                                                                          ║
+# ║  Supports three strategy modes (set per-strategy in STRATEGIES dict):   ║
+# ║    • "fixed_weight"  — rebalance to exact TARGET_WEIGHTS on schedule.   ║
+# ║    • "equal_weight"  — rebalance to 1/N equal weights on schedule.      ║
+# ║    • "hrp"           — walk-forward HRP (Riskfolio-Lib) with floor/cap. ║
+# ║                                                                          ║
+# ║  All modes share the same T+1 execution delay state machine:            ║
+# ║    • Day T : compute weights → store as pending → return False           ║
+# ║    • Day T+1: inject pending weights → return True (Rebalance fires)    ║
+# ║                                                                          ║
+# ║  Zero-lookahead-bias guarantee:                                          ║
+# ║    prices sliced with index < target.now so the current day's close      ║
+# ║    is never included in the optimisation window.                         ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 class WeightAlgoWithT1Delay(bt.Algo):
@@ -419,224 +450,247 @@ def main() -> None:
 
     # ── Step 0: Prepare output directory ──────────────────────────────────
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"[INFO] Output directory : {OUTPUT_DIR}")
-    print(
-        f"[INFO] Market frictions : "
-        f"{COMMISSION_BPS:.0f} bps commission/slippage | "
-        f"T+1 execution delay | "
-        f"{MIN_WEIGHT:.0%} weight floor"
-    )
-
+    print(f"[INFO] Output directory  : {OUTPUT_DIR}")
+    print(f"[INFO] Market frictions  : {COMMISSION_BPS:.0f} bps commission | T+1 delay | Annual rebal")
+    print(f"[INFO] Strategies        : {list(STRATEGIES.keys())}")
 
     # ══════════════════════════════════════════════════════════════════════
     # STEP 1 – DATA INGESTION  (yfinance)
+    # Download all unique tickers across ALL strategies in one call.
     # ══════════════════════════════════════════════════════════════════════
+    all_tickers: list[str] = sorted({
+        t for cfg in STRATEGIES.values() for t in cfg["tickers"]
+    })
     print(f"\n[STEP 1] Downloading adjusted-close prices ...")
-    print(f"         Tickers : {TICKERS}")
-    print(f"         Period  : {START_DATE}  →  {END_DATE}")
+    print(f"         All tickers : {all_tickers}")
+    print(f"         Period      : {START_DATE}  →  {END_DATE}")
 
     raw: pd.DataFrame = yf.download(
-        TICKERS,
+        all_tickers,
         start=START_DATE,
         end=END_DATE,
         auto_adjust=True,
         progress=False,
     )
+    all_prices: pd.DataFrame = (
+        raw["Close"].copy() if isinstance(raw.columns, pd.MultiIndex)
+        else raw[["Close"]].copy().rename(columns={"Close": all_tickers[0]})
+    )
+    all_prices = all_prices.dropna(axis=1, how="all")
 
-    if isinstance(raw.columns, pd.MultiIndex):
-        prices: pd.DataFrame = raw["Close"].copy()
-    else:
-        prices = raw[["Close"]].copy()
-        prices.columns = TICKERS
-
-    # ── Drop columns that are entirely empty (ticker not found at all) ────
-    prices = prices.dropna(axis=1, how="all")
-
-    # ── Per-ticker diagnostic: show date coverage and NaN density ─────────
-    # This block lets you see exactly which ticker is causing data loss
-    # before the joint dropna() trims the DataFrame.
-    print("\n[DEBUG] Per-ticker data coverage (before joint ffill/dropna):")
-    print(f"  {'Ticker':<12} {'First date':<14} {'Last date':<14} {'NaN rows':>9} {'Total rows':>11}")
-    print(f"  {'-'*12} {'-'*14} {'-'*14} {'-'*9} {'-'*11}")
-    for col in prices.columns:
-        s = prices[col]
-        nan_count = int(s.isna().sum())
-        non_null  = s.dropna()
-        first_dt  = non_null.index.min().date() if not non_null.empty else "N/A"
-        last_dt   = non_null.index.max().date() if not non_null.empty else "N/A"
-        total     = len(s)
-        print(f"  {col:<12} {str(first_dt):<14} {str(last_dt):<14} {nan_count:>9} {total:>11}")
-
-    # ── Holiday gap fill: carry the last known close across market holidays─
-    # ffill() handles UK/German/Italian bank holiday mismatches so that a
-    # single missing day in RMAU.L (UK holiday) doesn't drop an entire
-    # cross-market row from the joint DataFrame.
-    prices = prices.ffill()
-
-    # ── Drop only the leading rows where ANY ticker has no data yet ────────
-    # (i.e. before the youngest ETF's actual inception date)
-    prices = prices.dropna()
-
-    available: list[str] = prices.columns.tolist()
-    print(f"[INFO] Tickers with valid data : {available}")
-
-    if len(available) < 2:
-        sys.exit(
-            "[ERROR] Fewer than 2 tickers with valid price data. "
-            "Expand the date range or change the TICKERS list."
-        )
-
-    if len(prices) < LOOKBACK_YEARS * 252 + 60:
+    # ── Per-ticker diagnostic ──────────────────────────────────────────────
+    print("\n[DEBUG] Per-ticker data coverage:")
+    print(f"  {'Ticker':<12} {'First date':<14} {'Last date':<14} {'NaN':>5} {'Rows':>7}")
+    print(f"  {'-'*12} {'-'*14} {'-'*14} {'-'*5} {'-'*7}")
+    for col in all_prices.columns:
+        s = all_prices[col]
+        valid = s.dropna()
         print(
-            f"[WARN] Limited price history ({len(prices)} days). "
-            "Consider extending START_DATE."
+            f"  {col:<12} {str(valid.index.min().date()):<14} "
+            f"{str(valid.index.max().date()):<14} "
+            f"{int(s.isna().sum()):>5} {len(s):>7}"
         )
 
+    # Fill cross-market holiday gaps then drop leading rows where any ticker absent
+    all_prices = all_prices.ffill().dropna()
+    print(f"\n[INFO] Joint price matrix: {len(all_prices)} rows × {len(all_prices.columns)} cols")
 
     # ══════════════════════════════════════════════════════════════════════
-    # STEP 2 + 3 – WALK-FORWARD HRP BACKTEST  (Riskfolio-Lib inside bt)
+    # STEP 2 + 3 – BUILD AND RUN ALL STRATEGY BACKTESTS IN ONE PASS
+    # bt.run() accepts multiple bt.Backtest objects and handles them in a
+    # single simulation loop, producing directly comparable equity curves.
     # ══════════════════════════════════════════════════════════════════════
-    print(
-        f"\n[STEP 2+3] Running production backtest "
-        f"(lookback: {LOOKBACK_YEARS} yr | rebalance: {REBALANCE_FREQ} | "
-        f"T+1 delay | {COMMISSION_BPS} bps cost) ..."
-    )
+    print(f"\n[STEP 2+3] Building {len(STRATEGIES)} strategies ...")
 
-    # ── Strategy chain ─────────────────────────────────────────────────────
-    # SelectAll:       make every ticker available to Rebalance
-    # HRPWithT1Delay:  owns scheduling + HRP calc (Day T) + T+1 execution
-    # Rebalance:       executes trades when HRPWithT1Delay returns True
-    weight_algo = WeightAlgoWithT1Delay(
-        all_prices     = prices,
-        lookback_years = LOOKBACK_YEARS,
-        min_weight     = MIN_WEIGHT,
-        rebalance_freq = REBALANCE_FREQ,
-        max_weights    = MAX_WEIGHTS,
-        mode           = STRATEGY_MODE,
-        target_weights = TARGET_WEIGHTS,
-    )
+    backtests: list[bt.Backtest] = []
+    primary_name: str = ""
 
-    strategy_name = {
-        "fixed_weight": "FixedWeight_6ETF",
-        "equal_weight": "EqualWeight_GoldenButterfly",
-        "hrp":          "HRP_Production",
-    }.get(STRATEGY_MODE, "Portfolio")
+    for name, cfg in STRATEGIES.items():
+        strat_tickers = cfg["tickers"]
+        available = [t for t in strat_tickers if t in all_prices.columns]
+        missing   = set(strat_tickers) - set(available)
+        if missing:
+            print(f"  [WARN] {name}: tickers not in data — {missing}. Skipping.")
+            continue
+        if len(available) < 2:
+            print(f"  [WARN] {name}: fewer than 2 valid tickers. Skipping.")
+            continue
 
-    strategy = bt.Strategy(
-        strategy_name,
-        [
-            bt.algos.SelectAll(),
-            weight_algo,
-            bt.algos.Rebalance(),
-        ],
-    )
+        strat_prices = all_prices[available].copy()
 
-    # ── Friction #1: Commission + Slippage ────────────────────────────────
-    # bt calls this lambda for every buy/sell order.
-    # q = number of shares; p = price per share
-    # abs(q) * p = gross notional value of the trade
-    # × _COMMISSION_RATE = total friction cost deducted from the portfolio
-    backtest = bt.Backtest(
-        strategy,
-        prices,
-        commissions=lambda q, p: abs(q) * p * _COMMISSION_RATE,
-    )
-    result = bt.run(backtest)
+        algo = WeightAlgoWithT1Delay(
+            all_prices     = strat_prices,
+            lookback_years = LOOKBACK_YEARS,
+            min_weight     = cfg.get("min_weight", 0.0),
+            rebalance_freq = REBALANCE_FREQ,
+            max_weights    = cfg.get("max_weights", {}),
+            mode           = cfg["mode"],
+            target_weights = cfg.get("target_weights", {}),
+        )
+        strategy = bt.Strategy(
+            name,
+            [bt.algos.SelectAll(), algo, bt.algos.Rebalance()],
+        )
+        # Each bt.Backtest gets its own price DataFrame so universes can differ.
+        # Commission lambda is a closure over the global _COMMISSION_RATE constant.
+        rate = _COMMISSION_RATE
+        backtests.append(bt.Backtest(
+            strategy,
+            strat_prices,
+            commissions=lambda q, p, r=rate: abs(q) * p * r,
+        ))
+        print(f"  [{name}]  mode={cfg['mode']}  tickers={available}")
+        if cfg.get("primary", False):
+            primary_name = name
 
-    # ── Extract equity curve → daily returns ──────────────────────────────
-    equity_curve: pd.Series     = result.prices[strategy_name]
-    strategy_returns: pd.Series = equity_curve.pct_change().dropna()
-    strategy_returns.name = strategy_name
+    if not backtests:
+        sys.exit("[ERROR] No valid strategies to run. Check STRATEGIES config.")
 
-    # Strip the flat cash warmup prefix so QuantStats metrics reflect
-    # only the live-trading phase (after the first real rebalance on T+1).
-    nonzero = strategy_returns[strategy_returns != 0]
-    if nonzero.empty:
-        sys.exit("[ERROR] Strategy produced no non-zero returns. Check data/config.")
-    first_live = nonzero.index[0]
-    strategy_returns_live = strategy_returns.loc[first_live:]
-
-    total_return = (equity_curve.iloc[-1] / equity_curve.iloc[0]) - 1
-    print(
-        f"[INFO] Backtest period (incl. warmup) : "
-        f"{equity_curve.index[0].date()}  →  {equity_curve.index[-1].date()}"
-    )
-    print(
-        f"[INFO] Live-trading start (post T+1)  : "
-        f"{strategy_returns_live.index[0].date()}"
-    )
-    print(f"[INFO] Total return (full period)     : {total_return:.2%}")
-
-    # ── Save historical walk-forward weights ──────────────────────────────
-    weights_history: pd.DataFrame = result.get_security_weights(strategy_name)
-    weights_path = OUTPUT_DIR / "hrp_weights_history.csv"
-    weights_history.to_csv(weights_path)
-    print(f"\n[INFO] Historical weights saved → {weights_path}")
-
-    returns_path = OUTPUT_DIR / "hrp_returns.csv"
-    strategy_returns_live.to_csv(returns_path, header=True)
-    print(f"[INFO] Daily returns saved      → {returns_path}")
-
-    live_weights = weights_history.loc[weights_history.sum(axis=1) > 0]
-    if not live_weights.empty:
-        mode_label = {
-            "fixed_weight": "Fixed-Weight (target allocation)",
-            "equal_weight": "Equal-Weight (1/N)",
-            "hrp":          "HRP Walk-Forward",
-        }.get(STRATEGY_MODE, STRATEGY_MODE)
-        print(f"\n[INFO] Most recent {mode_label} allocation:")
-        for ticker, wgt in live_weights.iloc[-1].sort_values(ascending=False).items():
-            print(f"         {ticker:<6}  {wgt:.4%}")
-
+    print(f"\n[INFO] Running bt backtest ({len(backtests)} strategies) ...")
+    result = bt.run(*backtests)
 
     # ══════════════════════════════════════════════════════════════════════
-    # STEP 4 – PERFORMANCE REPORT  (QuantStats)
+    # STEP 4 – EXTRACT LIVE RETURNS AND PRINT COMPARISON TABLE
     # ══════════════════════════════════════════════════════════════════════
-    print("\n[STEP 4] Generating QuantStats HTML tear sheet ...")
+    print("\n[STEP 4] Extracting results ...")
 
+    all_live_returns: dict[str, pd.Series] = {}
+
+    for name in STRATEGIES:
+        if name not in result.prices.columns:
+            continue
+        equity: pd.Series = result.prices[name]
+        ret: pd.Series    = equity.pct_change().dropna()
+        nonzero = ret[ret != 0]
+        if nonzero.empty:
+            print(f"  [WARN] {name}: no non-zero returns.")
+            continue
+        live_ret = ret.loc[nonzero.index[0]:]
+        live_ret.name = name
+        all_live_returns[name] = live_ret
+        total_return = (equity.iloc[-1] / equity.iloc[0]) - 1
+        print(
+            f"  [{name}]  live_start={live_ret.index[0].date()}  "
+            f"total_return={total_return:.2%}  obs={len(live_ret)}"
+        )
+
+    # ── Download benchmark returns ─────────────────────────────────────────
     benchmark_returns: pd.Series | None = None
     if BENCHMARK_TICKER:
-        print(f"[INFO] Downloading benchmark : {BENCHMARK_TICKER}")
+        print(f"\n[INFO] Downloading benchmark: {BENCHMARK_TICKER}")
         bm_raw = yf.download(
-            BENCHMARK_TICKER,
-            start=START_DATE,
-            end=END_DATE,
-            auto_adjust=True,
-            progress=False,
+            BENCHMARK_TICKER, start=START_DATE, end=END_DATE,
+            auto_adjust=True, progress=False,
         )
         bm_prices = (
-            bm_raw["Close"].squeeze()
-            if isinstance(bm_raw.columns, pd.MultiIndex)
+            bm_raw["Close"].squeeze() if isinstance(bm_raw.columns, pd.MultiIndex)
             else bm_raw["Close"].squeeze()
         )
         benchmark_returns = bm_prices.pct_change().dropna()
         benchmark_returns.name = BENCHMARK_TICKER
 
-    tearsheet_path = OUTPUT_DIR / "hrp_tearsheet.html"
+    # ── Comparison table ───────────────────────────────────────────────────
+    # Reference index: align benchmark to the first strategy's live period
+    ref_index = next(iter(all_live_returns.values())).index if all_live_returns else None
 
-    qs.reports.html(
-        strategy_returns_live,
-        benchmark=benchmark_returns,
-        rf=0.0,
-        output=str(tearsheet_path),
-        title=(
-            f"{'Fixed-Weight' if STRATEGY_MODE == 'fixed_weight' else 'Equal-Weight' if STRATEGY_MODE == 'equal_weight' else 'HRP Walk-Forward'}"
-            " │ Balanced 6-ETF Multi-Factor │ EUNL+IS3Q+DBXN+IBCI+SGLD+WDSC │ "
-            f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ Annual Rebal"
-        ),
-        match_dates=True,
-    )
-    print(f"[INFO] Tear sheet saved → {tearsheet_path}")
+    print("\n" + "=" * 82)
+    print(f"  STRATEGY COMPARISON  |  Period: {START_DATE} → {END_DATE}  |  {COMMISSION_BPS:.0f}bps cost  |  Annual rebal")
+    print("=" * 82)
+    print(f"  {'Strategy':<36}  {'CAGR':>6}  {'Vol':>6}  {'Sharpe':>7}  {'Sortino':>8}  {'MaxDD':>8}")
+    print(f"  {'-'*36}  {'-'*6}  {'-'*6}  {'-'*7}  {'-'*8}  {'-'*8}")
 
+    for name, ret in all_live_returns.items():
+        label = STRATEGIES[name]["label"][:36]
+        primary_marker = " ★" if STRATEGIES[name].get("primary") else ""
+        print(
+            f"  {label + primary_marker:<36}  "
+            f"{qs.stats.cagr(ret):>6.2%}  "
+            f"{qs.stats.volatility(ret):>6.2%}  "
+            f"{qs.stats.sharpe(ret):>7.2f}  "
+            f"{qs.stats.sortino(ret):>8.2f}  "
+            f"{qs.stats.max_drawdown(ret):>8.2%}"
+        )
+
+    if benchmark_returns is not None and ref_index is not None:
+        bm = benchmark_returns.reindex(ref_index).dropna()
+        print(
+            f"  {'EUNL.DE — Pure Equity Benchmark':<36}  "
+            f"{qs.stats.cagr(bm):>6.2%}  "
+            f"{qs.stats.volatility(bm):>6.2%}  "
+            f"{qs.stats.sharpe(bm):>7.2f}  "
+            f"{qs.stats.sortino(bm):>8.2f}  "
+            f"{qs.stats.max_drawdown(bm):>8.2%}"
+        )
+    print("=" * 82)
+    print("  ★ = primary recommendation (full tearsheet generated)")
+    print("=" * 82)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 5 – SAVE OUTPUTS
+    # ══════════════════════════════════════════════════════════════════════
+    print("\n[STEP 5] Saving output files ...")
+
+    # Combined returns CSV (all strategies, inner-joined on common dates)
+    if all_live_returns:
+        combined = pd.DataFrame(all_live_returns).dropna()
+        returns_path = OUTPUT_DIR / "comparison_returns.csv"
+        combined.to_csv(returns_path)
+        print(f"[INFO] Combined returns  → {returns_path}")
+
+    # Per-strategy weight history CSV
+    for name in STRATEGIES:
+        if name not in result.prices.columns:
+            continue
+        wh: pd.DataFrame = result.get_security_weights(name)
+        wpath = OUTPUT_DIR / f"weights_{name}.csv"
+        wh.to_csv(wpath)
+        print(f"[INFO] Weights saved     → {wpath}")
+
+        live_wh = wh.loc[wh.sum(axis=1) > 0]
+        if not live_wh.empty:
+            primary_label = " (PRIMARY ★)" if STRATEGIES[name].get("primary") else ""
+            print(f"\n  Most recent allocation [{name}{primary_label}]:")
+            for ticker, wgt in live_wh.iloc[-1].sort_values(ascending=False).items():
+                if wgt > 0.001:
+                    print(f"    {ticker:<10}  {wgt:.2%}")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STEP 6 – QUANTSTATS TEARSHEET  (primary strategy only)
+    # ══════════════════════════════════════════════════════════════════════
+    print("\n[STEP 6] Generating QuantStats HTML tearsheet (primary strategy) ...")
+
+    if primary_name and primary_name in all_live_returns:
+        primary_ret = all_live_returns[primary_name]
+        primary_cfg = STRATEGIES[primary_name]
+        tearsheet_path = OUTPUT_DIR / "recommended_tearsheet.html"
+
+        bm_for_qs = None
+        if benchmark_returns is not None:
+            bm_for_qs = benchmark_returns.reindex(primary_ret.index).dropna()
+
+        qs.reports.html(
+            primary_ret,
+            benchmark=bm_for_qs,
+            rf=0.0,
+            output=str(tearsheet_path),
+            title=(
+                f"RECOMMENDED │ {primary_cfg['label']} │ "
+                f"T+1 Delay │ {COMMISSION_BPS:.0f}bps │ Annual Rebal │ "
+                "EUNL+IS3Q+DBXN+IBCI+SGLD+WDSC"
+            ),
+            match_dates=True,
+        )
+        print(f"[INFO] Primary tearsheet → {tearsheet_path}")
+    else:
+        print("[WARN] No primary strategy defined; tearsheet skipped.")
 
     # ══════════════════════════════════════════════════════════════════════
     # DONE
     # ══════════════════════════════════════════════════════════════════════
     print("\n" + "=" * 65)
-    print("  Production backtest complete. Output files:")
-    print(f"    {weights_path}")
-    print(f"    {returns_path}")
-    print(f"    {tearsheet_path}")
+    print("  Multi-strategy comparison complete.")
+    print(f"  Strategies : {list(STRATEGIES.keys())}")
+    print(f"  Outputs    : {OUTPUT_DIR}")
     print("=" * 65)
 
 
