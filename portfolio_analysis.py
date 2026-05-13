@@ -51,97 +51,95 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Investment Universe ────────────────────────────────────────────────────
-# European Golden Butterfly (ESG-Adapted) — "Proposta MAMMA" portfolio
-# Each holding maps to one of the five equal Golden Butterfly "buckets".
+# Balanced 6-ETF Multi-Factor Portfolio
+# Two equity buckets (core + quality), two bond buckets (short + long), gold, small cap.
 #
-# CLIENT TARGET HOLDINGS (from PDF proposal):
-#   iShares Core MSCI World UCITS ETF (Acc)               ISIN: IE00B4L5Y983
-#   Amundi MSCI World Small Cap ESG Broad Transition (Acc) ISIN: IE000UZZ5D45
-#   Xtrackers II EZ Gov Bond 7-10 UCITS ETF (Acc)         ISIN: LU0290357176
-#   Xtrackers II EUR Overnight Rate Swap UCITS ETF (Acc)   ISIN: LU0290358497
-#   Invesco Physical Gold A                                ISIN: IE00B579F325
+# HOLDINGS:
+#   EUNL.DE  iShares Core MSCI World UCITS ETF (Acc)     Xetra (EUR) 2005  ← broad DM equity core
+#   IS3Q.DE  iShares MSCI World Quality Factor UCITS ETF Xetra (EUR) 2014  ← quality/profitability tilt
+#   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 UCITS ETF    Xetra (EUR) 2007  ← duration anchor
+#   IBCI.DE  iShares EUR Corp Bond 1-5yr UCITS ETF       Xetra (EUR) 2012  ← short-med bond; capital preservation
+#   SGLD.L   Invesco Physical Gold ETC                   LSE   (USD) 2009  ← inflation hedge / tail risk
+#   WDSC.L   SPDR MSCI World Small Cap UCITS ETF         LSE   (USD) 2018  ← small cap premium
 #
-# PROXY / DIRECT TICKERS used here:
-#   EUNL.DE  iShares Core MSCI World (Acc)          Xetra (EUR) 2005  ← direct listing
-#   WDSC.L   SPDR MSCI World Small Cap UCITS ETF    LSE (USD)   2017  ← proxy for Amundi SC ESG
-#            (IE000UZZ5D45 has no yfinance ticker; WDSC.L tracks same MSCI World SC index)
-#   DBXN.DE  Xtrackers II EZ Gov Bond 7-10 (Acc)   Xetra (EUR) 2007  ← direct listing
-#   XEON.DE  Xtrackers EUR Overnight Rate Swap      Xetra (EUR) 2007  ← direct listing
-#   SGLD.L   Invesco Physical Gold ETC              LSE (USD)   2009  ← same issuer/fund
-#
-# IMPORTANT — XEON.DE (cash proxy): variance ≈ 0 in 2017-2021 (ECB negative rates),
-# then ~0.004% daily in 2022-2024 (ECB 4%). HRP naturally overweights it as the
-# lowest-vol asset. Capped at 30% to prevent it from crowding out growth assets.
-#
-# All 5 tickers have data from Jan 2017. Binding constraint: WDSC.L (Mar 2017).
-# START_DATE 2018-01-01; warmup Jan 2018 - Dec 2018; live: Jan 2019 - May 2026.
-# 7+ year live period covers COVID crash, 2022 rate shock, 2023-2026 recovery.
+# DATA COVERAGE:
+#   Binding constraint: WDSC.L — first data 2018-01-02.
+#   All other tickers: data from 2005-2014.
+#   START_DATE 2018-01-01; fixed_weight mode = no warmup; full 8+ year backtest.
+#   Live period 2018-2026 covers: 2018 selloff, 2020 COVID, 2022 rate shock, 2023-26 recovery.
+#   ~2,100 daily observations — statistically robust (8+ full calendar years).
 TICKERS: list[str] = [
-    "EUNL.DE",  # iShares Core MSCI World UCITS ETF (Acc)          – global equity core
-    "WDSC.L",   # SPDR MSCI World Small Cap UCITS ETF              – small cap growth (proxy: Amundi SC ESG)
-    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF (Acc)   – sovereign duration anchor
-    "XEON.DE",  # Xtrackers EUR Overnight Rate Swap UCITS ETF      – cash / capital preservation
-    "SGLD.L",   # Invesco Physical Gold ETC                        – inflation hedge / tail risk
+    "EUNL.DE",  # iShares Core MSCI World UCITS ETF (Acc)       – broad DM equity core
+    "IS3Q.DE",  # iShares MSCI World Quality Factor UCITS ETF   – quality / profitability tilt
+    "DBXN.DE",  # Xtrackers II EZ Gov Bond 7-10 UCITS ETF (Acc) – sovereign duration anchor
+    "IBCI.DE",  # iShares EUR Corp Bond 1-5yr UCITS ETF         – short-med bond; capital preservation
+    "SGLD.L",   # Invesco Physical Gold ETC                     – inflation hedge / tail risk
+    "WDSC.L",   # SPDR MSCI World Small Cap UCITS ETF           – small cap premium
 ]
 
 # ── Backtest Date Range ────────────────────────────────────────────────────
-START_DATE = "2018-01-01"   # all 5 tickers have data from 2017; 2018 start gives full warmup year
+START_DATE = "2018-01-01"   # WDSC.L (binding constraint) starts 2018-01-02; full 8+ year backtest
 END_DATE   = "2026-12-31"   # ceiling; yfinance returns data up to today if before this date
 
 # ── Lookback Window (Walk-Forward) ────────────────────────────────────────
 # Years of past daily returns fed into Riskfolio-Lib on each rebalance date.
-# The strategy stays in CASH during this warmup period.
-# 1 year ≈ 252 observations — sufficient for a stable 5×5 correlation matrix.
-# All 5 tickers have data from 2017; warmup 2018 gives live trading from Jan 2019.
-# 7+ year live period: covers COVID (Feb-Mar 2020), 2022 rate shock, 2023-2026 recovery.
+# Only used when STRATEGY_MODE = "hrp". For "fixed_weight", no lookback is needed.
+# 1 year ≈ 252 observations — sufficient for a stable 6×6 correlation matrix.
 LOOKBACK_YEARS: float = 1.0
 
 # ── Rebalancing Frequency ─────────────────────────────────────────────────
-# How often a new HRP calculation is triggered.
 # Options: "monthly" | "quarterly" | "semi-annual" | "yearly"
-REBALANCE_FREQ = "yearly"   # annual December rebalance; matches the proposal ("rimettiamo in ordine a dicembre")
+REBALANCE_FREQ = "yearly"   # annual rebalance; low turnover, tax-efficient
 
-# ── Weight Floor (Friction #3) ────────────────────────────────────────────
-# Minimum allocation per asset after HRP optimisation.
-# 10% floor: 5 assets × 10% = 50% committed. Remaining 50% allocated freely by HRP.
-# This prevents any single asset from being zeroed out by HRP, ensuring diversification
-# consistent with the Golden Butterfly philosophy (each bucket always held).
-# Note: the original Golden Butterfly uses fixed 20% each. HRP lets the algorithm
-# dynamically tilt within the 10%-30% range, adapting to changing market regimes.
-# Set to 0.0 to allow pure HRP weights (may heavily overweight XEON.DE).
-MIN_WEIGHT: float = 0.10   # 10% floor — each of the 5 "buckets" always held
-
-# ── Per-Asset Maximum Weight Caps ──────────────────────────────────────────
-# Max caps rationale for 4-asset ESG-pure universe:
-#   SUSW.L  50% — primary equity engine; allow HRP to lean in on low-vol regime
-#   SUSM.L  20% — EM is ~40% more volatile than DM; satellite only; single-region risk
-#   SUOE.L  25% — EUR IG credit: capped at 25% to prevent bond-heavy crowding.
-#               Combined with VAGF cap (25%) sets hard 50% max in total fixed income,
-#               ensuring minimum ~50% goes to equity (SUSW + SUSM post-redistribution).
-#   VAGF.DE 25% — global agg: same reasoning. Combined bond cap = 50% max.
-# With 10% floor each = 40% committed; bond caps ensure 40%+ goes to equity.
-# All constraints enforced by the manual 4-step post-optimisation clipper.
+# ── Weight Floor & Caps (used when STRATEGY_MODE = "hrp") ────────────────
+# Not applied in fixed_weight mode — target allocations ARE the constraints.
+#
+# Sensible HRP caps for this 6-ETF portfolio (if switching to HRP mode):
+#   EUNL.DE / IS3Q.DE: 35% each — equity; allow HRP to tilt but cap concentration
+#   DBXN.DE / IBCI.DE: 30% each — bonds; combined 60% max duration exposure
+#   SGLD.L  / WDSC.L:  25% each — satellite assets; higher vol, keep as diversifiers
+MIN_WEIGHT: float = 0.08   # 8% floor in HRP mode: 6 assets × 8% = 48% committed
 MAX_WEIGHTS: dict[str, float] = {
-    "SUSW.L":  0.50,   # DM ESG equity core:  cap 50% — primary return driver
-    "SUSM.L":  0.20,   # EM ESG satellite:    cap 20% — higher vol; concentration limit
-    "SUOE.L":  0.25,   # EUR IG credit ESG:   cap 25% — prevents bond-crowding; max 50% combined bonds
-    "VAGF.DE": 0.25,   # Global agg bond:     cap 25% — prevents bond-crowding; max 50% combined bonds
+    "EUNL.DE": 0.35,   # Core DM equity
+    "IS3Q.DE": 0.35,   # Quality factor
+    "DBXN.DE": 0.30,   # Long duration bonds
+    "IBCI.DE": 0.30,   # Short-medium bonds
+    "SGLD.L":  0.25,   # Gold satellite
+    "WDSC.L":  0.25,   # Small cap satellite
 }
 
-# ── Strategy Mode ────────────────────────────────────────────────────
-# "hrp"          — Walk-forward HRP (dynamic; adapts weights to recent vol/correlation)
-# "equal_weight" — Fixed 1/N equal weights, rebalanced on schedule (Golden Butterfly style)
+# ── Strategy Mode ────────────────────────────────────────────────────────
+# "fixed_weight"  — Rebalance to exact TARGET_WEIGHTS on schedule. No optimisation.
+#                   Best for validating a specific proposed allocation.
+# "equal_weight"  — Fixed 1/N equal weights, rebalanced on schedule.
+# "hrp"           — Walk-forward HRP with MIN_WEIGHT floor and MAX_WEIGHTS caps.
+#                   Adapts dynamically to changing vol/correlation regimes.
 #
-# When to use each:
-#   equal_weight  → when the portfolio buckets ARE the diversification (Golden Butterfly).
-#                   Simple, transparent, and avoids HRP over-weighting near-zero-vol assets
-#                   like XEON.DE. Matches the original proposal methodology exactly.
-#   hrp           → for equity-heavy or higher-vol universes where the correlation structure
-#                   changes meaningfully over time and dynamic tilts add value.
+# For this 6-ETF proposal, use "fixed_weight" to test the exact allocation.
+STRATEGY_MODE: str = "fixed_weight"   # "fixed_weight" | "equal_weight" | "hrp"
+
+# ── Target Weights (used when STRATEGY_MODE = "fixed_weight") ─────────────
+# Must sum to 1.0. Renormalised automatically at runtime.
 #
-# For the Golden Butterfly (EUNL+WDSC+DBXN+XEON+SGLD), "equal_weight" is the correct
-# mode: it reproduces the proposal's methodology and avoids the cash-crowding problem.
-STRATEGY_MODE: str = "equal_weight"   # "equal_weight" | "hrp"
+# Design rationale:
+#   40% equity  : EUNL 20% (broad DM) + IS3Q 20% (quality tilt)
+#                 Quality factor historically adds ~1-2% CAGR vs market-cap weight
+#                 with lower drawdowns (lower financial leverage, stable earnings).
+#   30% bonds   : DBXN 15% (7-10yr duration) + IBCI 15% (1-5yr corp)
+#                 Duration ladder: long bonds hedge equity selloffs; short bonds
+#                 provide yield pickup vs cash with low interest-rate risk.
+#   15% gold    : SGLD — negative / zero equity correlation in crises;
+#                 preserves real value; completes the inflation-hedge role.
+#   15% small cap: WDSC — small cap premium (Fama-French SMB); higher long-run
+#                 expected return vs large cap; diversifies away from mega-cap growth.
+TARGET_WEIGHTS: dict[str, float] = {
+    "EUNL.DE": 0.20,   # Broad DM equity core
+    "IS3Q.DE": 0.20,   # Quality factor tilt
+    "DBXN.DE": 0.15,   # Long-duration EZ sovereign
+    "IBCI.DE": 0.15,   # Short-medium EUR corp bond
+    "SGLD.L":  0.15,   # Gold
+    "WDSC.L":  0.15,   # Small cap premium
+}
 
 # ── Commission + Slippage Model (Friction #1) ─────────────────────────────
 # Combined estimate: broker commission + bid/ask half-spread.
@@ -201,6 +199,7 @@ class WeightAlgoWithT1Delay(bt.Algo):
         rebalance_freq: str,
         max_weights: dict[str, float] | None = None,
         mode: str = "hrp",
+        target_weights: dict[str, float] | None = None,
     ) -> None:
         super().__init__()
         self._prices        = all_prices
@@ -209,6 +208,19 @@ class WeightAlgoWithT1Delay(bt.Algo):
         self._max_weights   = max_weights or {}
         self._freq          = rebalance_freq.lower()
         self._mode          = mode.lower()
+        self._target_weights = target_weights or {}
+
+        if self._mode == "fixed_weight" and not self._target_weights:
+            raise ValueError(
+                "STRATEGY_MODE='fixed_weight' requires TARGET_WEIGHTS to be non-empty."
+            )
+        if self._mode == "fixed_weight":
+            total = sum(self._target_weights.values())
+            if not (0.999 < total < 1.001):
+                raise ValueError(
+                    f"TARGET_WEIGHTS must sum to 1.0 (got {total:.6f}). "
+                    "Adjust the values or they will be renormalised at runtime."
+                )
 
         # Scheduling state
         self._last_trigger_date: pd.Timestamp | None = None
@@ -221,9 +233,9 @@ class WeightAlgoWithT1Delay(bt.Algo):
                 f"Invalid REBALANCE_FREQ '{rebalance_freq}'. "
                 "Choose from: monthly, quarterly, semi-annual, yearly."
             )
-        if self._mode not in ("hrp", "equal_weight"):
+        if self._mode not in ("hrp", "equal_weight", "fixed_weight"):
             raise ValueError(
-                f"Invalid STRATEGY_MODE '{mode}'. Choose from: hrp, equal_weight."
+                f"Invalid STRATEGY_MODE '{mode}'. Choose from: hrp, equal_weight, fixed_weight."
             )
 
     # ── Scheduling helper ─────────────────────────────────────────────────
@@ -241,6 +253,17 @@ class WeightAlgoWithT1Delay(bt.Algo):
             return half(date) > half(prev)
         # yearly
         return date.year > prev.year
+
+    # ── Fixed-weight computation ───────────────────────────────────────────
+    def _compute_fixed_weight(self) -> dict[str, float]:
+        """
+        Returns the pre-defined target allocation from TARGET_WEIGHTS,
+        renormalised to sum exactly to 1.0.
+        The renormalisation is a safety net; in practice TARGET_WEIGHTS
+        should already sum to 1.0 (validated in __init__).
+        """
+        total = sum(self._target_weights.values())
+        return {k: v / total for k, v in self._target_weights.items()}
 
     # ── Equal-weight computation ───────────────────────────────────────────
     def _compute_equal_weight(
@@ -358,7 +381,7 @@ class WeightAlgoWithT1Delay(bt.Algo):
         self._last_trigger_date = target.now
 
         # ══ Phase C: Warmup guard (HRP only) ══════════════════════════════
-        # Equal-weight needs no warmup — skip straight to weight computation.
+        # fixed_weight and equal_weight need no historical data — skip warmup.
         past_prices: pd.DataFrame = self._prices.loc[
             self._prices.index < target.now
         ]
@@ -374,11 +397,10 @@ class WeightAlgoWithT1Delay(bt.Algo):
                 return False
 
         # ══ Phase E: Compute weights (Day T) ══════════════════════════════
-        available_assets = list(past_prices.columns) if self._mode == "equal_weight" \
-                           else list(window_returns.columns)  # type: ignore[union-attr]
-
-        if self._mode == "equal_weight":
-            weights = self._compute_equal_weight(available_assets)
+        if self._mode == "fixed_weight":
+            weights = self._compute_fixed_weight()
+        elif self._mode == "equal_weight":
+            weights = self._compute_equal_weight(list(past_prices.columns))
         else:
             weights = self._compute_hrp(window_returns)  # type: ignore[arg-type]
             if weights is None:
@@ -485,18 +507,20 @@ def main() -> None:
     # HRPWithT1Delay:  owns scheduling + HRP calc (Day T) + T+1 execution
     # Rebalance:       executes trades when HRPWithT1Delay returns True
     weight_algo = WeightAlgoWithT1Delay(
-        all_prices    = prices,
-        lookback_years= LOOKBACK_YEARS,
-        min_weight    = MIN_WEIGHT,
-        rebalance_freq= REBALANCE_FREQ,
-        max_weights   = MAX_WEIGHTS,
-        mode          = STRATEGY_MODE,
+        all_prices     = prices,
+        lookback_years = LOOKBACK_YEARS,
+        min_weight     = MIN_WEIGHT,
+        rebalance_freq = REBALANCE_FREQ,
+        max_weights    = MAX_WEIGHTS,
+        mode           = STRATEGY_MODE,
+        target_weights = TARGET_WEIGHTS,
     )
 
-    strategy_name = (
-        "EqualWeight_GoldenButterfly" if STRATEGY_MODE == "equal_weight"
-        else "HRP_Production"
-    )
+    strategy_name = {
+        "fixed_weight": "FixedWeight_6ETF",
+        "equal_weight": "EqualWeight_GoldenButterfly",
+        "hrp":          "HRP_Production",
+    }.get(STRATEGY_MODE, "Portfolio")
 
     strategy = bt.Strategy(
         strategy_name,
@@ -555,7 +579,11 @@ def main() -> None:
 
     live_weights = weights_history.loc[weights_history.sum(axis=1) > 0]
     if not live_weights.empty:
-        mode_label = "Equal-Weight (20% each)" if STRATEGY_MODE == "equal_weight" else "HRP Walk-Forward"
+        mode_label = {
+            "fixed_weight": "Fixed-Weight (target allocation)",
+            "equal_weight": "Equal-Weight (1/N)",
+            "hrp":          "HRP Walk-Forward",
+        }.get(STRATEGY_MODE, STRATEGY_MODE)
         print(f"\n[INFO] Most recent {mode_label} allocation:")
         for ticker, wgt in live_weights.iloc[-1].sort_values(ascending=False).items():
             print(f"         {ticker:<6}  {wgt:.4%}")
@@ -592,8 +620,8 @@ def main() -> None:
         rf=0.0,
         output=str(tearsheet_path),
         title=(
-            f"{'Equal-Weight' if STRATEGY_MODE == 'equal_weight' else 'HRP Walk-Forward'}"
-            " │ Golden Butterfly ESG 5-ETF │ EUNL+WDSC+DBXN+XEON+SGLD │ "
+            f"{'Fixed-Weight' if STRATEGY_MODE == 'fixed_weight' else 'Equal-Weight' if STRATEGY_MODE == 'equal_weight' else 'HRP Walk-Forward'}"
+            " │ Balanced 6-ETF Multi-Factor │ EUNL+IS3Q+DBXN+IBCI+SGLD+WDSC │ "
             f"T+1 Delay │ {COMMISSION_BPS:.0f}bps Cost │ Annual Rebal"
         ),
         match_dates=True,
